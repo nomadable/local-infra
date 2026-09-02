@@ -8,7 +8,6 @@ on:
 permissions:
   contents: read
 
-jobs:
   verify:
     name: Rust checks
     runs-on: ubuntu-22.04
@@ -17,7 +16,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.82"
+          toolchain: "1.85"
           components: rustfmt, clippy
 
       # Linux keyring support links against the system D-Bus development files.
