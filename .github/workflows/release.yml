@@ -1,0 +1,166 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Release gate
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.82"
+          components: rustfmt, clippy
+      - name: Require tag and package version to agree
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json, sys; print(json.load(sys.stdin)["packages"][0]["version"])')"
+          test "$TAG" = "v$version"
+
+
+      - name: Install Linux build dependencies
+        run: sudo apt-get update && sudo apt-get install --yes libdbus-1-dev pkg-config
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Lint
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Test
+        run: cargo test --locked
+
+  package:
+    name: ${{ matrix.asset }}
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            asset: aarch64-apple-darwin
+            macos_deployment_target: "13.0"
+          - os: macos-15-intel
+            asset: x86_64-apple-darwin
+            macos_deployment_target: "13.0"
+          - os: ubuntu-22.04
+            asset: x86_64-unknown-linux-gnu
+            macos_deployment_target: ""
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.82"
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install --yes libdbus-1-dev pkg-config
+
+      - name: Build release binary
+        shell: bash
+        env:
+          TARGET: ${{ matrix.asset }}
+          MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macos_deployment_target }}
+        run: |
+          set -euo pipefail
+          host="$(rustc -vV | sed -n 's/^host: //p')"
+          test "$host" = "$TARGET"
+          cargo build --release --locked --bin linf --target "$TARGET"
+
+      - name: Archive binary and documentation
+        shell: bash
+        env:
+          VERSION: ${{ github.ref_name }}
+          TARGET: ${{ matrix.asset }}
+        run: |
+          set -euo pipefail
+          root="linf-${VERSION}-${TARGET}"
+          asset="linf-${TARGET}"
+          mkdir "$root"
+          cp "target/${TARGET}/release/linf" "$root/"
+          cp README.md LICENSE "$root/"
+          tar -czf "${asset}.tar.gz" "$root"
+          if command -v shasum >/dev/null; then
+            shasum -a 256 "${asset}.tar.gz" > "${asset}.tar.gz.sha256"
+          else
+            sha256sum "${asset}.tar.gz" > "${asset}.tar.gz.sha256"
+          fi
+      - name: Smoke-test release archive
+        shell: bash
+        env:
+          VERSION: ${{ github.ref_name }}
+          TARGET: ${{ matrix.asset }}
+        run: |
+          set -euo pipefail
+          root="linf-${VERSION}-${TARGET}"
+          asset="linf-${TARGET}"
+          tar -tzf "${asset}.tar.gz" | grep -Fx "${root}/linf"
+          tar -tzf "${asset}.tar.gz" | grep -Fx "${root}/README.md"
+          tar -tzf "${asset}.tar.gz" | grep -Fx "${root}/LICENSE"
+          if command -v shasum >/dev/null; then
+            shasum -a 256 -c "${asset}.tar.gz.sha256"
+          else
+            sha256sum -c "${asset}.tar.gz.sha256"
+          fi
+          tar -xzf "${asset}.tar.gz"
+          test -x "${root}/linf"
+          "${root}/linf" --version
+
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: |
+            linf-*.tar.gz
+            linf-*.tar.gz.sha256
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    needs: package
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          pattern: "*-apple-darwin"
+          merge-multiple: true
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          pattern: "*-unknown-linux-gnu"
+          merge-multiple: true
+
+      - name: Stage one-command installer
+        run: |
+          set -euo pipefail
+          cp scripts/release-install.sh release-assets/linf-installer.sh
+          chmod 0755 release-assets/linf-installer.sh
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --generate-notes \
+            release-assets/*.tar.gz \
+            release-assets/*.tar.gz.sha256 \
+            release-assets/linf-installer.sh

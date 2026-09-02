@@ -1,0 +1,69 @@
+[package]
+name = "local-infra"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+description = "local-infra — shared local and remote development infrastructure from the terminal"
+license = "MIT"
+
+readme = "README.md"
+keywords = ["docker", "postgres", "minio", "terminal", "development"]
+categories = ["command-line-utilities", "development-tools"]
+documentation = "https://docs.rs/local-infra"
+repository = "https://github.com/nomadable/local-infra"
+homepage = "https://github.com/nomadable/local-infra"
+exclude = ["local-infra-prd.md", ".omc/**"]
+[[bin]]
+name = "linf"
+path = "src/main.rs"
+
+[lib]
+name = "local_infra"
+path = "src/lib.rs"
+
+[dependencies]
+aes-gcm = "0.10"
+argon2 = "0.5"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive", "wrap_help"] }
+clap_complete = "4"
+crossterm = "0.28"
+directories = "5"
+fs4 = { version = "0.12", features = ["sync"] }
+libc = "0.2"
+rand = "0.8"
+ratatui = "0.29"
+rpassword = "7"
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "process",
+    "io-util",
+    "time",
+    "sync",
+    "fs",
+    "signal",
+] }
+toml = "0.8"
+unicode-width = "0.2"
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", features = ["apple-native"] }
+
+
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3", features = ["sync-secret-service"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+lto = "thin"
+strip = true
