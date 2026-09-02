@@ -438,7 +438,7 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 fn unhex(s: &str) -> Result<Vec<u8>> {
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return Err(Error::failed(
             "비밀 저장소 손상",
             "16진 문자열 길이가 홀수입니다.",

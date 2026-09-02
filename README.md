@@ -70,7 +70,7 @@ linf --version
 
 ### 소스에서 설치
 
-Rust 1.85 이상이 있다면 저장소에서 재현 가능한 lockfile 설치를 할 수 있습니다.
+Rust 1.88 이상이 있다면 저장소에서 재현 가능한 lockfile 설치를 할 수 있습니다.
 
 ```sh
 cargo install --path . --locked

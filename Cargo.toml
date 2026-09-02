@@ -2,7 +2,7 @@
 name = "local-infra"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.85"
+rust-version = "1.88"
 description = "local-infra — shared local and remote development infrastructure from the terminal"
 license = "MIT"
 

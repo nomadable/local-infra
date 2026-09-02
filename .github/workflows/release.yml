@@ -16,7 +16,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.85"
+          toolchain: "1.88"
           components: rustfmt, clippy
       - name: Require tag and package version to agree
         env:
@@ -60,7 +60,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.85"
+          toolchain: "1.88"
       - name: Install Linux build dependencies
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install --yes libdbus-1-dev pkg-config

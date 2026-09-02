@@ -16,7 +16,7 @@ permissions:
 
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.85"
+          toolchain: "1.88"
           components: rustfmt, clippy
 
       # Linux keyring support links against the system D-Bus development files.
