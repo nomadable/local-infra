@@ -39,6 +39,18 @@ curl -fsSL https://apps.nomadable.io/local-infra/install | bash -s -- \
   --version vX.Y.Z --install-dir "$HOME/.local/bin"
 ```
 
+### 최신 버전으로 업데이트
+
+공식 installer로 설치한 `linf`는 현재 설치 경로에 최신 GitHub Release를 다시 설치합니다.
+
+```sh
+linf update
+linf --version
+```
+
+소스 빌드(`target/debug` 또는 `target/release`)는 실수로 덮어쓰지 않도록 거부합니다.
+그 경우에는 `cargo install --path . --locked`로 다시 설치하세요.
+
 ### GitHub Release archive — 수동 설치
 
 [Releases](https://github.com/nomadable/local-infra/releases)에서 운영체제와 CPU에 맞는 archive를 받습니다.

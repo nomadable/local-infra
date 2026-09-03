@@ -10,6 +10,7 @@
 
 mod agent_skill;
 pub mod output;
+mod update;
 use crate::core::config::SecretMode;
 use crate::core::error::{Error, Result};
 use crate::core::model::{AuthType, BackupFormat, EngineKind, Origin, ResourceKind};
@@ -83,6 +84,8 @@ pub enum Command {
     },
     /// 등록 정보와 이 앱이 만든 Docker 리소스를 모두 삭제합니다.
     Reset,
+    /// 현재 설치 경로에 최신 GitHub Release를 설치합니다.
+    Update,
     /// Agent Skills 호환 프로젝트 또는 전역 skill 폴더에 설치합니다.
     Skill {
         #[command(subcommand)]
@@ -511,9 +514,20 @@ async fn dispatch(command: Command, e: Emitter) -> Result<()> {
         Command::Tunnel { cmd } => run_tunnel(cmd, e).await,
         Command::Backup { cmd } => run_backup(cmd, e).await,
         Command::Reset => run_reset(e).await,
+        Command::Update => run_update(e).await,
         Command::Skill { cmd } => run_skill(cmd, e).await,
         Command::Discover { target } => run_discover(&target, e).await,
     }
+}
+
+async fn run_update(e: Emitter) -> Result<()> {
+    let (receipt, installer_output) = update::run().await?;
+    e.data(&receipt, || {
+        if !installer_output.is_empty() {
+            println!("{installer_output}");
+        }
+        println!("\n업데이트 확인: {}", receipt.version);
+    })
 }
 
 async fn run_skill(cmd: SkillCmd, e: Emitter) -> Result<()> {
@@ -1780,8 +1794,8 @@ mod tests {
     }
 
     /// The other direction of PRD §7.10: anything that operates TUI-managed
-    /// resources is available from the command palette. Output-only tooling and
-    /// Agent Skill installation are intentionally CLI-only.
+    /// resources is available from the command palette. Output-only tooling,
+    /// self-update, and Agent Skill installation are intentionally CLI-only.
     #[test]
     fn every_cli_subcommand_is_reachable_from_the_palette() {
         let palette: Vec<String> = Keymap::defaults()
@@ -1789,7 +1803,7 @@ mod tests {
             .into_iter()
             .map(|(name, _)| name)
             .collect();
-        let exempt = ["completions", "skill.install"];
+        let exempt = ["completions", "skill.install", "update"];
         let missing: Vec<String> = Command::palette_names()
             .into_iter()
             .filter(|name| !exempt.contains(&name.as_str()))
@@ -1911,6 +1925,12 @@ mod tests {
     fn bare_invocation_selects_the_tui() {
         let cli = Cli::try_parse_from(["linf"]).unwrap();
         assert!(cli.command.is_none());
+    }
+
+    #[test]
+    fn update_is_a_headless_command() {
+        let cli = Cli::try_parse_from(["linf", "update"]).unwrap();
+        assert!(matches!(cli.command, Some(Command::Update)));
     }
 
     #[test]

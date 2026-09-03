@@ -1,6 +1,6 @@
 [package]
 name = "local-infra"
-version = "0.2.3"
+version = "0.2.4"
 edition = "2021"
 rust-version = "1.88"
 description = "local-infra — shared local and remote development infrastructure from the terminal"
@@ -50,6 +50,7 @@ tokio = { version = "1", features = [
     "signal",
 ] }
 toml = "0.8"
+tempfile = "3"
 unicode-width = "0.2"
 uuid = { version = "1", features = ["v4", "serde"] }
 
@@ -62,7 +63,6 @@ keyring = { version = "3", features = ["apple-native"] }
 keyring = { version = "3", features = ["sync-secret-service"] }
 
 [dev-dependencies]
-tempfile = "3"
 
 [profile.release]
 lto = "thin"
