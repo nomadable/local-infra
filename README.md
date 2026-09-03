@@ -83,6 +83,45 @@ crates.io 배포가 시작된 뒤에는 다음 설치 경로도 지원합니다.
 cargo install local-infra --locked
 ```
 
+### Agent Skill로 로컬 인프라 구성
+
+`linf`를 설치한 뒤 Agent Skill을 프로젝트에 등록하면, agent에게 로컬 개발용
+PostgreSQL DB와 MinIO 버킷 구성을 요청할 수 있습니다.
+
+```sh
+# 현재 프로젝트의 Claude Code skill 경로에 등록
+linf skill install
+```
+
+기본 설치 위치는 `./.claude/skills/local-infrastructure/SKILL.md`입니다. 다른
+Agent Skills 호환 도구의 skill 루트에는 `--dir`을 지정하세요.
+
+```sh
+linf skill install --dir .agents/skills
+```
+
+등록 뒤에는 새 agent 세션에서 다음처럼 요청합니다.
+
+```text
+acme용 로컬 PostgreSQL과 MinIO를 구성해줘.
+```
+
+Skill은 바로 Docker 명령을 조합하지 않습니다. 먼저 `linf doctor`, Target·엔진 목록을
+읽고, 사용할 로컬 Target을 선택합니다. Target이 없으면 등록 명령을 먼저 보여 주고
+확인을 받습니다. 이후 엔진과 DB·버킷의 `--plan` 결과 및 실제 생성 명령을 보여 준 뒤,
+명시적 확인 후에만 엔진 → 프로젝트 리소스 순서로 생성하고 실제 접속을 검증합니다.
+
+기본적으로 로컬 Docker만 대상으로 하며, 원격 Target을 추론하지 않습니다. 비밀값은
+명령 인자로 전달하지 않고, 요청하지 않은 `.env` 값도 채팅·저장소·로그에 출력하지
+않습니다. raw Docker/Compose, `psql`, `mc` 대신 항상 `linf` CLI를 사용합니다.
+
+기존 Skill은 덮어쓰지 않습니다. 새 `linf` 버전의 지침으로 명시적으로 교체할 때만
+`--force`를 사용하세요.
+
+```sh
+linf skill install --force
+```
+
 ## 5분 시작
 
 ```sh

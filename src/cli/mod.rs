@@ -8,8 +8,8 @@
 //! * No subcommand ever accepts a password. Values are generated or read from
 //!   stdin, so nothing lands in shell history (PRD §11.2).
 
+mod agent_skill;
 pub mod output;
-
 use crate::core::config::SecretMode;
 use crate::core::error::{Error, Result};
 use crate::core::model::{AuthType, BackupFormat, EngineKind, Origin, ResourceKind};
@@ -83,6 +83,11 @@ pub enum Command {
     },
     /// 등록 정보와 이 앱이 만든 Docker 리소스를 모두 삭제합니다.
     Reset,
+    /// Agent Skill을 프로젝트 또는 지정한 skill 폴더에 설치합니다.
+    Skill {
+        #[command(subcommand)]
+        cmd: SkillCmd,
+    },
 
     /// 셸 자동완성 스크립트를 출력합니다.
     Completions {
@@ -369,6 +374,19 @@ pub enum BackupCmd {
     Verify { id: String },
 }
 
+#[derive(Debug, Subcommand)]
+pub enum SkillCmd {
+    /// 번들된 Agent Skill을 설치합니다.
+    Install {
+        /// Skill을 설치할 루트 폴더. Claude Code 프로젝트 기본 경로는 `.claude/skills`입니다.
+        #[arg(long, default_value = ".claude/skills")]
+        dir: PathBuf,
+        /// 기존 local-infrastructure Skill을 새 번들 내용으로 교체합니다.
+        #[arg(long)]
+        force: bool,
+    },
+}
+
 impl Command {
     /// The palette name for this command, matching PRD §7.10's `: db create`
     /// form. Kept in sync with `tui::keymap::Action::name` by a test.
@@ -490,7 +508,20 @@ async fn dispatch(command: Command, e: Emitter) -> Result<()> {
         Command::Tunnel { cmd } => run_tunnel(cmd, e).await,
         Command::Backup { cmd } => run_backup(cmd, e).await,
         Command::Reset => run_reset(e).await,
+        Command::Skill { cmd } => run_skill(cmd, e).await,
         Command::Discover { target } => run_discover(&target, e).await,
+    }
+}
+
+async fn run_skill(cmd: SkillCmd, e: Emitter) -> Result<()> {
+    match cmd {
+        SkillCmd::Install { dir, force } => {
+            let receipt = agent_skill::install(&dir, force)?;
+            e.data(&receipt, || {
+                println!("Agent Skill을 `{}`에 설치했습니다.", receipt.path);
+                println!("새 agent 세션에서 로컬 인프라 요청을 시작하세요.");
+            })
+        }
     }
 }
 
@@ -1744,9 +1775,9 @@ mod tests {
         assert!(!cli.yes);
     }
 
-    /// The other direction of PRD §7.10: anything the CLI can do, the command
-    /// palette can run too. Only shell-completion generation is exempt — it
-    /// writes a script to stdout and has no meaning inside a TUI.
+    /// The other direction of PRD §7.10: anything that operates TUI-managed
+    /// resources is available from the command palette. Output-only tooling and
+    /// Agent Skill installation are intentionally CLI-only.
     #[test]
     fn every_cli_subcommand_is_reachable_from_the_palette() {
         let palette: Vec<String> = Keymap::defaults()
@@ -1754,7 +1785,7 @@ mod tests {
             .into_iter()
             .map(|(name, _)| name)
             .collect();
-        let exempt = ["completions"];
+        let exempt = ["completions", "skill.install"];
         let missing: Vec<String> = Command::palette_names()
             .into_iter()
             .filter(|name| !exempt.contains(&name.as_str()))
@@ -1777,6 +1808,13 @@ mod tests {
             &mut files,
         );
         assert!(!files.is_empty(), "no sources scanned");
+        let skill =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("skills/local-infra/SKILL.md");
+        assert!(
+            skill.is_file(),
+            "bundled local-infrastructure Agent Skill is missing"
+        );
+        files.push(skill);
 
         let root = Cli::command();
         // The exact regression this test exists for: `target add` was hinted
@@ -1869,6 +1907,20 @@ mod tests {
     fn bare_invocation_selects_the_tui() {
         let cli = Cli::try_parse_from(["linf"]).unwrap();
         assert!(cli.command.is_none());
+    }
+
+    #[test]
+    fn skill_install_defaults_to_the_claude_project_skill_root() {
+        let cli = Cli::try_parse_from(["linf", "skill", "install"]).unwrap();
+        match cli.command {
+            Some(Command::Skill {
+                cmd: SkillCmd::Install { dir, force },
+            }) => {
+                assert_eq!(dir, PathBuf::from(".claude/skills"));
+                assert!(!force);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
     }
 
     #[test]

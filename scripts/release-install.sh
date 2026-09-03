@@ -77,7 +77,7 @@ case "$VERSION" in
     RELEASE_URL="https://github.com/${REPOSITORY}/releases/download/${VERSION}"
     ;;
   *)
-    fail '--version must be an annotated tag such as v0.1.0'
+    fail '--version must be an annotated tag such as vX.Y.Z'
     ;;
 esac
 
