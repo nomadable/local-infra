@@ -24,22 +24,19 @@ Docker daemon은 실행 중이어야 합니다. `linf doctor`가 Docker CLI와 d
 
 ### One-command install — 권장
 
-첫 GitHub Release가 만들어진 뒤 다음을 실행합니다.
-
 ```sh
-( tmp="$(mktemp)" && trap 'rm -f "$tmp"' 0 \
-  && curl -fsSL "https://github.com/nomadable/local-infra/releases/latest/download/linf-installer.sh" -o "$tmp" \
-  && sh "$tmp" )
+curl -fsSL https://apps.nomadable.io/local-infra/install | bash
 ```
 
-`curl` 다운로드 실패가 설치 성공처럼 보이지 않도록 임시 파일을 거쳐 실행합니다. installer는 운영체제와 CPU를 감지하고, archive와 SHA-256 파일을 내려받아 검증한 뒤 `${LINF_INSTALL_DIR:-$HOME/.local/bin}/linf`에 설치합니다. root로 실행하지 않으며, macOS Apple Silicon/Intel과 Linux x86_64 (Ubuntu 22.04+)만 지원합니다.
+installer는 운영체제와 CPU를 감지하고, archive와 SHA-256을 검증한 뒤
+`${LINF_INSTALL_DIR:-$HOME/.local/bin}/linf`에 설치합니다. root로 실행하지 않으며,
+macOS Apple Silicon/Intel과 Linux x86_64 (Ubuntu 22.04+)를 지원합니다.
 
-특정 버전을 설치하거나 기본 설치 경로를 바꾸려면 installer 인자를 추가합니다.
+특정 버전을 설치하거나 기본 설치 경로를 바꾸려면 installer 인자를 전달하세요.
 
 ```sh
-( tmp="$(mktemp)" && trap 'rm -f "$tmp"' 0 \
-  && curl -fsSL "https://github.com/nomadable/local-infra/releases/latest/download/linf-installer.sh" -o "$tmp" \
-  && sh "$tmp" --version vX.Y.Z --install-dir "$HOME/.local/bin" )
+curl -fsSL https://apps.nomadable.io/local-infra/install | bash -s -- \
+  --version vX.Y.Z --install-dir "$HOME/.local/bin"
 ```
 
 ### GitHub Release archive — 수동 설치

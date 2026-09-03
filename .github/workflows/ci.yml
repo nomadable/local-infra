@@ -31,3 +31,6 @@ permissions:
 
       - name: Test
         run: cargo test --locked
+
+      - name: Installer smoke
+        run: sh scripts/test-release-install.sh

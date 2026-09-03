@@ -115,5 +115,19 @@ done
 
 mkdir -p "$INSTALL_DIR"
 install -m 0755 "$BINARY" "$INSTALL_DIR/linf"
-printf 'Installed linf to %s/linf\n' "$INSTALL_DIR"
-printf 'Run: %s/linf --version\n' "$INSTALL_DIR"
+
+printf '\nlinf 설치 완료: %s/linf\n' "$INSTALL_DIR"
+case ":${PATH:-}:" in
+  *":$INSTALL_DIR:"*)
+    ;;
+  *)
+    printf '\n현재 shell에서 `linf`를 쓰려면 먼저 다음을 실행하세요:\n'
+    printf '  export PATH="%s:$PATH"\n' "$INSTALL_DIR"
+    ;;
+esac
+
+printf '\n다음 단계:\n'
+printf '  1. 설치 확인: linf --version\n'
+printf '  2. Docker 확인: linf doctor\n'
+printf '  3. 터미널 앱 열기: linf\n'
+printf '  4. agent에서 사용: linf skill install\n'

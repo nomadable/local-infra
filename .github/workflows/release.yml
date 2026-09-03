@@ -38,6 +38,9 @@ jobs:
       - name: Test
         run: cargo test --locked
 
+      - name: Installer smoke
+        run: sh scripts/test-release-install.sh
+
   package:
     name: ${{ matrix.asset }}
     needs: verify
