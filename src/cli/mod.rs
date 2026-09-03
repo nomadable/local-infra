@@ -83,7 +83,7 @@ pub enum Command {
     },
     /// 등록 정보와 이 앱이 만든 Docker 리소스를 모두 삭제합니다.
     Reset,
-    /// Agent Skill을 프로젝트 또는 지정한 skill 폴더에 설치합니다.
+    /// Agent Skills 호환 프로젝트 또는 전역 skill 폴더에 설치합니다.
     Skill {
         #[command(subcommand)]
         cmd: SkillCmd,
@@ -378,9 +378,12 @@ pub enum BackupCmd {
 pub enum SkillCmd {
     /// 번들된 Agent Skill을 설치합니다.
     Install {
-        /// Skill을 설치할 루트 폴더. Claude Code 프로젝트 기본 경로는 `.claude/skills`입니다.
-        #[arg(long, default_value = ".claude/skills")]
-        dir: PathBuf,
+        /// Agent Skills 호환 skill 루트. 기본값은 프로젝트의 `.agents/skills`입니다.
+        #[arg(long, value_name = "DIR")]
+        dir: Option<PathBuf>,
+        /// 사용자 전역 `~/.agents/skills`에 설치합니다.
+        #[arg(short = 'g', long)]
+        global: bool,
         /// 기존 local-infrastructure Skill을 새 번들 내용으로 교체합니다.
         #[arg(long)]
         force: bool,
@@ -515,7 +518,8 @@ async fn dispatch(command: Command, e: Emitter) -> Result<()> {
 
 async fn run_skill(cmd: SkillCmd, e: Emitter) -> Result<()> {
     match cmd {
-        SkillCmd::Install { dir, force } => {
+        SkillCmd::Install { dir, global, force } => {
+            let dir = agent_skill::resolve_dir(dir, global)?;
             let receipt = agent_skill::install(&dir, force)?;
             e.data(&receipt, || {
                 println!("Agent Skill을 `{}`에 설치했습니다.", receipt.path);
@@ -1910,14 +1914,53 @@ mod tests {
     }
 
     #[test]
-    fn skill_install_defaults_to_the_claude_project_skill_root() {
+    fn skill_install_defaults_to_the_portable_project_skill_root() {
         let cli = Cli::try_parse_from(["linf", "skill", "install"]).unwrap();
         match cli.command {
             Some(Command::Skill {
-                cmd: SkillCmd::Install { dir, force },
+                cmd: SkillCmd::Install { dir, global, force },
             }) => {
-                assert_eq!(dir, PathBuf::from(".claude/skills"));
+                assert_eq!(dir, None);
+                assert!(!global);
                 assert!(!force);
+                assert_eq!(
+                    agent_skill::resolve_dir(dir, global).unwrap(),
+                    PathBuf::from(".agents/skills")
+                );
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn skill_install_accepts_the_portable_global_scope() {
+        let cli = Cli::try_parse_from(["linf", "skill", "install", "-g"]).unwrap();
+        match cli.command {
+            Some(Command::Skill {
+                cmd: SkillCmd::Install { dir, global, .. },
+            }) => {
+                assert_eq!(dir, None);
+                assert!(global);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        let cli = Cli::try_parse_from([
+            "linf",
+            "skill",
+            "install",
+            "--dir",
+            ".claude/skills",
+            "--global",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Command::Skill {
+                cmd: SkillCmd::Install { dir, global, .. },
+            }) => {
+                assert!(matches!(
+                    agent_skill::resolve_dir(dir, global),
+                    Err(Error::Usage(_))
+                ));
             }
             other => panic!("unexpected {other:?}"),
         }

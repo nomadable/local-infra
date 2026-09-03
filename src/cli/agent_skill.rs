@@ -4,15 +4,19 @@
 //! and `cargo install` expose the same post-install workflow as a source checkout.
 
 use crate::core::error::{Error, Result};
+use directories::UserDirs;
 use serde::Serialize;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 const SKILL_NAME: &str = "local-infrastructure";
 const SKILL_FILE: &str = "SKILL.md";
 const CONTENT: &str = include_str!("../../skills/local-infra/SKILL.md");
+
+pub const PROJECT_SKILL_ROOT: &str = ".agents/skills";
+const GLOBAL_SKILL_ROOT: &str = ".agents/skills";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct InstallReceipt {
@@ -20,8 +24,43 @@ pub struct InstallReceipt {
     pub overwritten: bool,
 }
 
-/// Copy the bundled portable Agent Skill into a skill root such as
-/// `.claude/skills` or an agent-specific equivalent.
+/// Resolve a portable Agent Skills root. `.agents/skills` is the cross-client
+/// convention at both project and user scope; agent-specific roots remain
+/// available through `--dir`.
+pub fn resolve_dir(dir: Option<PathBuf>, global: bool) -> Result<PathBuf> {
+    if global && dir.is_some() {
+        return Err(Error::Usage(
+            "`--dir`과 `--global`은 함께 사용할 수 없습니다.".into(),
+        ));
+    }
+
+    let home = UserDirs::new();
+    resolve_dir_for_home(dir, global, home.as_ref().map(|dirs| dirs.home_dir()))
+}
+
+fn resolve_dir_for_home(
+    dir: Option<PathBuf>,
+    global: bool,
+    home: Option<&Path>,
+) -> Result<PathBuf> {
+    if global {
+        let home = home.ok_or_else(|| {
+            Error::failed(
+                "전역 Agent Skill 경로를 결정할 수 없습니다",
+                "현재 사용자의 홈 디렉터리를 찾지 못했습니다.",
+                "프로젝트 범위로 설치하거나 홈 디렉터리를 설정한 뒤 다시 실행하세요.",
+            )
+        })?;
+        return Ok(global_dir(home));
+    }
+
+    Ok(dir.unwrap_or_else(|| PathBuf::from(PROJECT_SKILL_ROOT)))
+}
+
+fn global_dir(home: &Path) -> PathBuf {
+    home.join(GLOBAL_SKILL_ROOT)
+}
+/// Copy the bundled portable Agent Skill into a selected skill root.
 ///
 /// An existing non-file is never replaced. Replacing an existing `SKILL.md`
 /// needs explicit `--force`, so updating the binary cannot silently alter an
@@ -148,5 +187,28 @@ mod tests {
 
         assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
         assert_eq!(fs::read_to_string(installed).unwrap(), "existing");
+    }
+
+    #[test]
+    fn default_scope_uses_the_portable_project_convention() {
+        assert_eq!(
+            resolve_dir(None, false).unwrap(),
+            PathBuf::from(".agents/skills")
+        );
+    }
+
+    #[test]
+    fn global_scope_uses_the_portable_user_convention() {
+        let home = Path::new("/test/home");
+        assert_eq!(
+            resolve_dir_for_home(None, true, Some(home)).unwrap(),
+            home.join(".agents/skills")
+        );
+    }
+
+    #[test]
+    fn custom_and_global_scopes_are_mutually_exclusive() {
+        let error = resolve_dir(Some(PathBuf::from(".claude/skills")), true).unwrap_err();
+        assert!(matches!(error, Error::Usage(_)));
     }
 }

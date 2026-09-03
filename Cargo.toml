@@ -1,6 +1,6 @@
 [package]
 name = "local-infra"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 rust-version = "1.88"
 description = "local-infra — shared local and remote development infrastructure from the terminal"
@@ -12,7 +12,7 @@ categories = ["command-line-utilities", "development-tools"]
 documentation = "https://docs.rs/local-infra"
 repository = "https://github.com/nomadable/local-infra"
 homepage = "https://github.com/nomadable/local-infra"
-exclude = ["local-infra-prd.md", ".omc/**"]
+exclude = ["local-infra-prd.md", ".omc/**", ".claude/**"]
 [[bin]]
 name = "linf"
 path = "src/main.rs"

@@ -89,15 +89,19 @@ cargo install local-infra --locked
 PostgreSQL DB와 MinIO 버킷 구성을 요청할 수 있습니다.
 
 ```sh
-# 현재 프로젝트의 Claude Code skill 경로에 등록
+# 현재 프로젝트: ./.agents/skills/local-infrastructure/SKILL.md
 linf skill install
+
+# 현재 사용자 전역: ~/.agents/skills/local-infrastructure/SKILL.md
+linf skill install -g
 ```
 
-기본 설치 위치는 `./.claude/skills/local-infrastructure/SKILL.md`입니다. 다른
-Agent Skills 호환 도구의 skill 루트에는 `--dir`을 지정하세요.
+`.agent`가 아니라 `.agents/skills`(복수형)를 사용합니다. 이는 Agent Skills 호환 도구가
+프로젝트·사용자 전역에서 함께 탐색하는 경로입니다. 특정 도구가 자체 skill 경로만
+탐색한다면 그 경로를 `--dir`로 명시할 수 있습니다.
 
 ```sh
-linf skill install --dir .agents/skills
+linf skill install --dir .claude/skills
 ```
 
 등록 뒤에는 새 agent 세션에서 다음처럼 요청합니다.
