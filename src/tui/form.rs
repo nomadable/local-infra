@@ -477,6 +477,7 @@ impl Form {
                 false
             }
             Field::Target | Field::Engine | Field::Options => self.cycle(forward),
+            Field::Principal if self.engine == EngineKind::Minio => self.cycle(forward),
             _ => false,
         }
     }
@@ -1646,6 +1647,14 @@ mod tests {
         assert_eq!(f.locale(), "C");
         assert!(f.cycle(true));
         assert_eq!(f.locale(), "C.UTF-8");
+
+        let mut minio = form(EngineKind::Minio);
+        minio.focus = Field::Principal;
+        assert!(minio.auto_principal);
+        assert!(minio.move_option(true));
+        assert!(!minio.auto_principal);
+        assert!(minio.move_option(false));
+        assert!(minio.auto_principal);
 
         f.focus = Field::Project;
         assert!(!f.cycle(true));

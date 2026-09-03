@@ -513,27 +513,36 @@ impl App {
         }
 
         if let Some(Modal::Form(form)) = &mut self.modal {
-            let changed = match key.code {
-                KeyCode::Backspace => form.backspace(),
-                KeyCode::Left => {
+            let (consumed, changed) = match key.code {
+                KeyCode::Backspace => {
+                    let changed = form.backspace();
+                    (changed, changed)
+                }
+                // Form rows are stacked, while each row's choices are laid out
+                // horizontally. Keep the arrow axes aligned with that geometry.
+                KeyCode::Up => {
                     form.prev_field();
-                    true
+                    (true, false)
                 }
-                KeyCode::Right => {
+                KeyCode::Down => {
                     form.next_field();
-                    true
+                    (true, false)
                 }
-                KeyCode::Char(' ') if form.focus == Field::Kind => form.toggle(),
+                KeyCode::Left => (true, form.move_option(false)),
+                KeyCode::Right => (true, form.move_option(true)),
+                KeyCode::Char(' ') if form.focus == Field::Kind => (true, form.toggle()),
                 _ => match printable {
-                    Some(c) => form.type_char(c),
-                    None => false,
+                    Some(c) => {
+                        let changed = form.type_char(c);
+                        (changed, changed)
+                    }
+                    None => (false, false),
                 },
             };
             if changed {
                 self.refresh_plan();
-                return true;
             }
-            return false;
+            return consumed;
         }
 
         if let Some(Modal::SshForm(form)) = &mut self.modal {
@@ -3080,26 +3089,70 @@ mod smoke {
     }
 
     #[test]
-    fn the_new_resource_form_opens_and_validates_as_it_is_typed() {
+    fn resource_form_arrows_follow_the_visible_field_and_option_axes() {
         let (mut app, _dir) = app();
         key(&mut app, 'n');
         let Some(Modal::Form(form)) = &app.modal else {
             panic!("`n` opens the create form");
         };
         assert_eq!(form.focus, Field::Kind);
-        press(&mut app, KeyCode::Right);
-        press(&mut app, KeyCode::Right);
+
+        // Database and bucket are side by side: Left/Right move their cursor
+        // without leaving the 종류 row.
         press(&mut app, KeyCode::Right);
         let Some(Modal::Form(form)) = &app.modal else {
             panic!("the form stayed open");
         };
+        assert_eq!(form.focus, Field::Kind);
+        assert_eq!(form.option_cursor, 1);
+        press(&mut app, KeyCode::Left);
+        let Some(Modal::Form(form)) = &app.modal else {
+            panic!("the form stayed open");
+        };
+        assert_eq!(form.focus, Field::Kind);
+        assert_eq!(form.option_cursor, 0);
+
+        // The fields themselves are stacked. This fixture exposes Target too,
+        // so Down walks 종류 → Target → 엔진 → 프로젝트명.
+        press(&mut app, KeyCode::Down);
+        let Some(Modal::Form(form)) = &app.modal else {
+            panic!("the form stayed open");
+        };
+        assert_eq!(form.focus, Field::Target);
+        press(&mut app, KeyCode::Down);
+        let Some(Modal::Form(form)) = &app.modal else {
+            panic!("the form stayed open");
+        };
+        assert_eq!(form.focus, Field::Engine);
+        press(&mut app, KeyCode::Down);
+        let Some(Modal::Form(form)) = &app.modal else {
+            panic!("the form stayed open");
+        };
         assert_eq!(form.focus, Field::Project);
+        press(&mut app, KeyCode::Up);
+        let Some(Modal::Form(form)) = &app.modal else {
+            panic!("the form stayed open");
+        };
+        assert_eq!(form.focus, Field::Engine);
+
+        press(&mut app, KeyCode::Down);
         typed(&mut app, "Letsbid");
         let Some(Modal::Form(form)) = &app.modal else {
             panic!("the form stayed open");
         };
         assert_eq!(form.name, "letsbid_dev");
         assert_eq!(form.principal, "letsbid_user");
+
+        // Navigation does not invalidate a valid plan.
+        let epoch = form.epoch();
+        press(&mut app, KeyCode::Left);
+        press(&mut app, KeyCode::Up);
+        let Some(Modal::Form(form)) = &app.modal else {
+            panic!("the form stayed open");
+        };
+        assert_eq!(form.focus, Field::Engine);
+        assert_eq!(form.epoch(), epoch);
+        press(&mut app, KeyCode::Down);
         let text = frame(&mut app);
         assert!(text.contains("새 리소스"));
         assert!(text.contains("실행 계획"));

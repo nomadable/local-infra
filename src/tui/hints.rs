@@ -310,10 +310,14 @@ pub fn hints(keymap: &Keymap, context: HintContext) -> Vec<Hint> {
             });
             out.push(Hint {
                 key: "← →".to_string(),
-                label: "질문".to_string(),
+                label: "선택지".to_string(),
                 action: None,
             });
-            push(Action::Down, "항목", &mut out);
+            out.push(Hint {
+                key: "↑ ↓".to_string(),
+                label: "항목".to_string(),
+                action: None,
+            });
             push(Action::Submit, "실행", &mut out);
             push(Action::Cancel, "취소", &mut out);
         }
@@ -610,12 +614,13 @@ mod tests {
     }
 
     #[test]
-    fn the_form_bar_matches_the_prd_footer() {
+    fn form_bar_describes_selection_and_navigation_axes() {
         let km = keymap();
         let hints = hints(&km, HintContext::Form);
         assert_eq!(keys(&hints)[0], "Space");
         assert_eq!(labels(&hints)[0], "선택");
-        assert!(labels(&hints).contains(&"질문"));
+        assert!(labels(&hints).contains(&"선택지"));
+        assert!(labels(&hints).contains(&"항목"));
         assert!(labels(&hints).contains(&"실행"));
         assert!(labels(&hints).contains(&"취소"));
     }
