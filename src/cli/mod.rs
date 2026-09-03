@@ -523,10 +523,17 @@ async fn dispatch(command: Command, e: Emitter) -> Result<()> {
 async fn run_update(e: Emitter) -> Result<()> {
     let (receipt, installer_output) = update::run().await?;
     e.data(&receipt, || {
-        if !installer_output.is_empty() {
-            println!("{installer_output}");
+        if receipt.updated {
+            if !installer_output.is_empty() {
+                println!("{installer_output}");
+            }
+            println!("\n업데이트 확인: linf {}", receipt.latest_version);
+        } else {
+            println!(
+                "업데이트가 필요 없습니다. 현재 linf {} · 최신 linf {}",
+                receipt.current_version, receipt.latest_version
+            );
         }
-        println!("\n업데이트 확인: {}", receipt.version);
     })
 }
 

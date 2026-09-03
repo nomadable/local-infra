@@ -41,7 +41,9 @@ curl -fsSL https://apps.nomadable.io/local-infra/install | bash -s -- \
 
 ### 최신 버전으로 업데이트
 
-공식 installer로 설치한 `linf`는 현재 설치 경로에 최신 GitHub Release를 다시 설치합니다.
+`linf update`는 현재 버전과 GitHub의 최신 안정 릴리즈를 먼저 비교합니다. 최신이면
+다운로드·설치 없이 현재/최신 버전만 알려주고, 새 릴리즈가 있을 때만 현재 설치 경로를
+업데이트합니다.
 
 ```sh
 linf update

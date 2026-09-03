@@ -1,21 +1,41 @@
 //! Self-update through the same checksum-verifying installer used for first install.
 
 use crate::core::error::{Error, Result};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
 use tempfile::Builder;
 use tokio::process::Command;
 
 const INSTALLER_URL: &str = "https://apps.nomadable.io/local-infra/install";
+const LATEST_RELEASE_URL: &str =
+    "https://api.github.com/repos/nomadable/local-infra/releases/latest";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct UpdateReceipt {
     pub path: String,
-    pub version: String,
+    pub current_version: String,
+    pub latest_version: String,
+    pub updated: bool,
 }
 
-/// Install the latest release into the directory containing the running binary,
-/// then execute that replacement once to verify it reports a version.
+#[derive(Debug, Deserialize)]
+struct LatestRelease {
+    tag_name: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct Version(u64, u64, u64);
+
+impl std::fmt::Display for Version {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}.{}.{}", self.0, self.1, self.2)
+    }
+}
+
+/// Compare the running package with GitHub's canonical latest release. The
+/// installer only runs when that release is newer, and receives the discovered
+/// tag so the metadata check and installed archive cannot drift apart.
 pub async fn run() -> Result<(UpdateReceipt, String)> {
     let executable = std::env::current_exe().map_err(|error| {
         Error::failed(
@@ -25,6 +45,22 @@ pub async fn run() -> Result<(UpdateReceipt, String)> {
         )
     })?;
     let install_dir = installation_dir(&executable)?;
+    let current_version = env!("CARGO_PKG_VERSION").to_string();
+    let current = parse_plain_version(&current_version)?;
+    let (latest_tag, latest_version, latest) = latest_release().await?;
+
+    if current.cmp(&latest) != Ordering::Less {
+        return Ok((
+            UpdateReceipt {
+                path: executable.display().to_string(),
+                current_version: current_version.clone(),
+                latest_version,
+                updated: false,
+            },
+            String::new(),
+        ));
+    }
+
     let temp = Builder::new()
         .prefix("linf-update-")
         .tempdir()
@@ -36,8 +72,18 @@ pub async fn run() -> Result<(UpdateReceipt, String)> {
             )
         })?;
     let bootstrap = temp.path().join("installer.sh");
+    let installer_output =
+        update_inner(&bootstrap, &install_dir, &executable, &latest_tag, latest).await?;
 
-    update_inner(&bootstrap, &install_dir, &executable).await
+    Ok((
+        UpdateReceipt {
+            path: executable.display().to_string(),
+            current_version,
+            latest_version,
+            updated: true,
+        },
+        installer_output,
+    ))
 }
 
 fn installation_dir(executable: &Path) -> Result<PathBuf> {
@@ -70,11 +116,54 @@ fn installation_dir(executable: &Path) -> Result<PathBuf> {
     Ok(parent.to_path_buf())
 }
 
+async fn latest_release() -> Result<(String, String, Version)> {
+    let output = Command::new("curl")
+        .args([
+            "--fail",
+            "--location",
+            "--silent",
+            "--show-error",
+            "--proto",
+            "=https",
+            "--tlsv1.2",
+            "--header",
+            "Accept: application/vnd.github+json",
+            "--header",
+            "X-GitHub-Api-Version: 2026-03-10",
+            "--header",
+            "User-Agent: local-infra",
+            LATEST_RELEASE_URL,
+        ])
+        .output()
+        .await
+        .map_err(|error| {
+            command_error("최신 릴리즈 정보를 가져올 수 없습니다", error.to_string())
+        })?;
+    if !output.status.success() {
+        return Err(command_error(
+            "최신 릴리즈 정보를 가져올 수 없습니다",
+            output_detail(&output.stderr),
+        ));
+    }
+
+    let release: LatestRelease = serde_json::from_slice(&output.stdout).map_err(|error| {
+        Error::failed(
+            "최신 릴리즈 정보를 읽을 수 없습니다",
+            error.to_string(),
+            "잠시 뒤 다시 실행하거나 GitHub API 상태를 확인하세요.",
+        )
+    })?;
+    let version = parse_release_tag(&release.tag_name)?;
+    Ok((release.tag_name, version.to_string(), version))
+}
+
 async fn update_inner(
     bootstrap: &Path,
     install_dir: &Path,
     executable: &Path,
-) -> Result<(UpdateReceipt, String)> {
+    latest_tag: &str,
+    expected_version: Version,
+) -> Result<String> {
     let download = Command::new("curl")
         .args([
             "--fail",
@@ -109,6 +198,8 @@ async fn update_inner(
         // that guarantee.
         .env_remove("LINF_REPOSITORY")
         .arg(bootstrap)
+        .arg("--version")
+        .arg(latest_tag)
         .arg("--install-dir")
         .arg(install_dir)
         .output()
@@ -134,16 +225,69 @@ async fn update_inner(
             output_detail(&version.stderr),
         ));
     }
+    let version_text = String::from_utf8_lossy(&version.stdout);
+    let reported = version_text.split_whitespace().last().ok_or_else(|| {
+        Error::failed(
+            "업데이트한 linf 버전을 확인할 수 없습니다",
+            "`linf --version` 출력이 비어 있습니다.",
+            "공식 installer로 다시 설치한 뒤 `linf --version`을 확인하세요.",
+        )
+    })?;
+    let installed = parse_plain_version(reported)?;
+    if installed != expected_version {
+        return Err(Error::failed(
+            "업데이트한 linf 버전이 예상과 다릅니다",
+            format!(
+                "요청한 버전은 {}, 설치된 버전은 {}입니다.",
+                expected_version, installed
+            ),
+            "`linf update`를 다시 실행하거나 GitHub Release 상태를 확인하세요.",
+        ));
+    }
 
-    Ok((
-        UpdateReceipt {
-            path: executable.display().to_string(),
-            version: String::from_utf8_lossy(&version.stdout).trim().to_string(),
-        },
-        String::from_utf8_lossy(&install.stdout).trim().to_string(),
-    ))
+    Ok(String::from_utf8_lossy(&install.stdout).trim().to_string())
 }
 
+fn parse_release_tag(tag: &str) -> Result<Version> {
+    let version = tag
+        .trim()
+        .strip_prefix('v')
+        .ok_or_else(|| invalid_version(tag))?;
+    parse_plain_version(version)
+}
+
+fn parse_plain_version(input: &str) -> Result<Version> {
+    let normalized = input.trim();
+    let mut parts = normalized.split('.');
+    let version = Version(
+        parse_component(parts.next(), input)?,
+        parse_component(parts.next(), input)?,
+        parse_component(parts.next(), input)?,
+    );
+    if parts.next().is_some() {
+        return Err(invalid_version(input));
+    }
+    Ok(version)
+}
+
+fn parse_component(value: Option<&str>, input: &str) -> Result<u64> {
+    let value = value.ok_or_else(|| invalid_version(input))?;
+    if value.is_empty()
+        || (value.len() > 1 && value.starts_with('0'))
+        || !value.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return Err(invalid_version(input));
+    }
+    value.parse::<u64>().map_err(|_| invalid_version(input))
+}
+
+fn invalid_version(input: &str) -> Error {
+    Error::failed(
+        "릴리즈 버전을 읽을 수 없습니다",
+        format!("`{input}`은(는) vX.Y.Z 형식이 아닙니다."),
+        "공식 GitHub Release의 tag 형식을 확인하세요.",
+    )
+}
 fn command_error(what: &str, cause: String) -> Error {
     Error::failed(
         what,
@@ -169,6 +313,21 @@ fn output_detail(output: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn release_tags_compare_numerically() {
+        assert_eq!(parse_release_tag("v0.2.10").unwrap(), Version(0, 2, 10));
+        assert!(parse_release_tag("v0.2.10").unwrap() > parse_release_tag("v0.2.9").unwrap());
+        assert_eq!(parse_plain_version("0.2.10").unwrap(), Version(0, 2, 10));
+    }
+
+    #[test]
+    fn malformed_or_noncanonical_release_tags_are_refused() {
+        assert!(parse_release_tag("0.2.3").is_err());
+        assert!(parse_release_tag("v0.2").is_err());
+        assert!(parse_release_tag("v0.2.3-beta").is_err());
+        assert!(parse_release_tag("v0.02.3").is_err());
+    }
 
     #[test]
     fn installed_binary_updates_its_own_parent_directory() {
