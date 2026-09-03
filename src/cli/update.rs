@@ -237,10 +237,7 @@ async fn update_inner(
     if installed != expected_version {
         return Err(Error::failed(
             "업데이트한 linf 버전이 예상과 다릅니다",
-            format!(
-                "요청한 버전은 {}, 설치된 버전은 {}입니다.",
-                expected_version, installed
-            ),
+            format!("요청한 버전은 {expected_version}, 설치된 버전은 {installed}입니다."),
             "`linf update`를 다시 실행하거나 GitHub Release 상태를 확인하세요.",
         ));
     }
