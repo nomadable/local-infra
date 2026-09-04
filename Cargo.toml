@@ -1,6 +1,6 @@
 [package]
 name = "local-infra"
-version = "0.2.6"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.88"
 description = "local-infra — shared local and remote development infrastructure from the terminal"
