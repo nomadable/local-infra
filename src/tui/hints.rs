@@ -832,7 +832,9 @@ mod tests {
                     let Some(action) = hint.action else {
                         continue;
                     };
-                    let chord = km.chord_for(action).expect(hint.label.as_str());
+                    let chord = km
+                        .chord_for(action)
+                        .unwrap_or_else(|| panic!("{}", hint.label));
                     assert_eq!(hint.key, chord.to_string(), "{screen:?} {}", hint.label);
                     let mut modifiers = crossterm::event::KeyModifiers::NONE;
                     if chord.ctrl {
