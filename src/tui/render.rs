@@ -358,7 +358,7 @@ fn empty_message(view: &View) -> &'static str {
         Screen::Tunnels => "터널 기록이 없습니다. 원격 리소스에서 `t`로 시작하세요.",
         Screen::Backups => "백업 기록이 없습니다. 리소스에서 `b`로 백업하세요.",
         Screen::Activity => "기록된 활동이 없습니다.",
-        Screen::Doctor => "진단 결과가 없습니다. `Ctrl+T`로 실행하세요.",
+        Screen::Doctor => "진단 결과가 없습니다. 하단 단축키로 실행하세요.",
     }
 }
 

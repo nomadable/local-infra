@@ -894,7 +894,7 @@ pub fn doctor_detail_lines(
     ))];
     if snap.checks.is_empty() {
         lines.push(Line::from(Span::styled(
-            "  진단 결과가 아직 없습니다. `Ctrl+T`로 실행하세요.".to_string(),
+            "  진단 결과가 아직 없습니다. 하단 단축키로 실행하세요.".to_string(),
             theme.muted(),
         )));
     }

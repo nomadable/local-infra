@@ -118,10 +118,7 @@ fn screen_actions(
                     (Action::Refresh, "새로 고침"),
                 ]
             } else {
-                vec![
-                    (Action::EngineEnsure, "엔진 만들기"),
-                    (Action::Refresh, "새로 고침"),
-                ]
+                vec![(Action::Refresh, "새로 고침")]
             }
         }
 
@@ -192,7 +189,7 @@ fn screen_actions(
                     (Action::TunnelToggle, "시작/중지"),
                     (Action::Add, "모두 시작"),
                     (Action::Test, "상태 재확인"),
-                    (Action::Delete, "기록 삭제"),
+                    (Action::Delete, "터널 중지"),
                     (Action::Refresh, "새로 고침"),
                 ]
             } else {
@@ -204,7 +201,6 @@ fn screen_actions(
                 vec![
                     (Action::Restore, "복원"),
                     (Action::Test, "무결성 검증"),
-                    (Action::Delete, "기록 삭제"),
                     (Action::Refresh, "새로 고침"),
                 ]
             } else {
@@ -212,13 +208,22 @@ fn screen_actions(
             }
         }
         // PRD §7.8: expand an entry, copy diagnostics.
-        Screen::Activity => vec![
-            (Action::Open, "펼치기"),
-            (Action::CopyExpanded, "진단 복사"),
-            (Action::Filter, "필터"),
-            (Action::Refresh, "새로 고침"),
-        ],
-        Screen::Doctor => vec![(Action::Test, "진단 실행"), (Action::Refresh, "새로 고침")],
+        Screen::Activity => {
+            let mut actions = vec![(Action::Filter, "필터"), (Action::Refresh, "새로 고침")];
+            if selected {
+                actions.insert(0, (Action::CopyExpanded, "진단 복사"));
+                actions.insert(0, (Action::Open, "펼치기"));
+            }
+            actions
+        }
+        Screen::Doctor => {
+            let mut actions = Vec::new();
+            if selected {
+                actions.push((Action::Open, "상세"));
+            }
+            actions.extend([(Action::Test, "진단 실행"), (Action::Refresh, "새로 고침")]);
+            actions
+        }
     };
     rows
 }
@@ -257,11 +262,18 @@ pub fn hints(keymap: &Keymap, context: HintContext) -> Vec<Hint> {
                     action: None,
                 });
             }
-            out.push(Hint {
-                key: "←/→".to_string(),
-                label: "화면".to_string(),
-                action: Some(Action::NextScreen),
-            });
+            let keys = [Action::PrevScreen, Action::NextScreen]
+                .into_iter()
+                .filter_map(|action| keymap.chord_for(action).map(|chord| chord.to_string()))
+                .collect::<Vec<_>>()
+                .join("/");
+            if !keys.is_empty() {
+                out.push(Hint {
+                    key: keys,
+                    label: "화면".to_string(),
+                    action: None,
+                });
+            }
 
             for (action, label) in screen_actions(screen, focus, selected, resource) {
                 push(action, label, &mut out);
@@ -623,6 +635,225 @@ mod tests {
         assert!(labels(&hints).contains(&"항목"));
         assert!(labels(&hints).contains(&"실행"));
         assert!(labels(&hints).contains(&"취소"));
+    }
+
+    fn empty(screen: Screen) -> HintContext {
+        HintContext::Screen {
+            screen,
+            focus: Focus::List,
+            selected: false,
+            resource: None,
+            busy: false,
+        }
+    }
+
+    fn listed(ctx: HintContext) -> Vec<(String, String)> {
+        hints(&keymap(), ctx)
+            .into_iter()
+            .map(|h| (h.key, h.label))
+            .collect()
+    }
+
+    #[test]
+    fn every_tab_footer_matches_the_selected_and_empty_inventory() {
+        let nav = ("←/→".to_string(), "화면".to_string());
+        let globals = [
+            (":".to_string(), "명령".to_string()),
+            ("?".to_string(), "도움말".to_string()),
+            ("q".to_string(), "종료".to_string()),
+        ];
+
+        assert_eq!(
+            listed(screen(Screen::Engines)),
+            [
+                nav.clone(),
+                ("Enter".into(), "상세".into()),
+                ("Ctrl+R".into(), "재시작".into()),
+                ("l".into(), "로그".into()),
+                ("e".into(), "다시 만들기".into()),
+                ("x".into(), "삭제".into()),
+                ("r".into(), "새로 고침".into()),
+            ]
+            .into_iter()
+            .chain(globals.clone())
+            .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            listed(empty(Screen::Engines)),
+            [nav.clone(), ("r".into(), "새로 고침".into())]
+                .into_iter()
+                .chain(globals.clone())
+                .collect::<Vec<_>>()
+        );
+
+        assert_eq!(
+            listed(empty(Screen::Resources)),
+            [
+                nav.clone(),
+                ("n".into(), "새 리소스".into()),
+                ("r".into(), "새로 고침".into()),
+            ]
+            .into_iter()
+            .chain(globals.clone())
+            .collect::<Vec<_>>()
+        );
+
+        assert_eq!(
+            listed(on(Screen::Resources, Some(ResourceKind::Bucket)))
+                .into_iter()
+                .map(|(_, label)| label)
+                .collect::<Vec<_>>(),
+            vec![
+                "화면",
+                "새 리소스",
+                "URL 복사",
+                "env 복사",
+                "터널",
+                "접근 테스트",
+                "백업",
+                "복원",
+                "키 교체",
+                "삭제",
+                "엔진 로그",
+                "비밀 값 표시",
+                "필터",
+                "명령",
+                "도움말",
+                "종료",
+            ]
+        );
+
+        assert_eq!(
+            listed(screen(Screen::Tunnels)),
+            [
+                nav.clone(),
+                ("t".into(), "시작/중지".into()),
+                ("a".into(), "모두 시작".into()),
+                ("Ctrl+T".into(), "상태 재확인".into()),
+                ("x".into(), "터널 중지".into()),
+                ("r".into(), "새로 고침".into()),
+            ]
+            .into_iter()
+            .chain(globals.clone())
+            .collect::<Vec<_>>()
+        );
+
+        assert_eq!(
+            listed(screen(Screen::Backups)),
+            [
+                nav.clone(),
+                ("R".into(), "복원".into()),
+                ("Ctrl+T".into(), "무결성 검증".into()),
+                ("r".into(), "새로 고침".into()),
+            ]
+            .into_iter()
+            .chain(globals.clone())
+            .collect::<Vec<_>>()
+        );
+        assert!(
+            !listed(screen(Screen::Backups))
+                .iter()
+                .any(|(_, label)| label == "기록 삭제"),
+            "backups must not advertise a delete that the TUI refuses"
+        );
+
+        assert_eq!(
+            listed(screen(Screen::Activity)),
+            [
+                nav.clone(),
+                ("Enter".into(), "펼치기".into()),
+                ("Y".into(), "진단 복사".into()),
+                ("/".into(), "필터".into()),
+                ("r".into(), "새로 고침".into()),
+            ]
+            .into_iter()
+            .chain(globals.clone())
+            .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            listed(empty(Screen::Activity)),
+            [
+                nav.clone(),
+                ("/".into(), "필터".into()),
+                ("r".into(), "새로 고침".into()),
+            ]
+            .into_iter()
+            .chain(globals.clone())
+            .collect::<Vec<_>>()
+        );
+
+        assert_eq!(
+            listed(screen(Screen::Targets)),
+            [
+                nav.clone(),
+                ("a".into(), "Target 추가".into()),
+                ("Enter".into(), "상세".into()),
+                ("Ctrl+T".into(), "접속 테스트".into()),
+                ("l".into(), "엔진 로그".into()),
+                ("x".into(), "등록 해제".into()),
+                ("r".into(), "새로 고침".into()),
+            ]
+            .into_iter()
+            .chain(globals.clone())
+            .collect::<Vec<_>>()
+        );
+
+        assert_eq!(
+            listed(screen(Screen::Doctor)),
+            [
+                nav,
+                ("Enter".into(), "상세".into()),
+                ("Ctrl+T".into(), "진단 실행".into()),
+                ("r".into(), "새로 고침".into()),
+            ]
+            .into_iter()
+            .chain(globals)
+            .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn every_displayed_action_resolves_from_its_shown_key() {
+        let km = keymap();
+        for screen in Screen::ALL {
+            for (selected, resource) in [
+                (true, Some(ResourceKind::Database)),
+                (true, Some(ResourceKind::Bucket)),
+                (false, None),
+            ] {
+                let ctx = HintContext::Screen {
+                    screen,
+                    focus: Focus::List,
+                    selected,
+                    resource,
+                    busy: false,
+                };
+                for hint in hints(&km, ctx) {
+                    let Some(action) = hint.action else {
+                        continue;
+                    };
+                    let chord = km.chord_for(action).expect(hint.label.as_str());
+                    assert_eq!(hint.key, chord.to_string(), "{screen:?} {}", hint.label);
+                    let mut modifiers = crossterm::event::KeyModifiers::NONE;
+                    if chord.ctrl {
+                        modifiers |= crossterm::event::KeyModifiers::CONTROL;
+                    }
+                    if chord.alt {
+                        modifiers |= crossterm::event::KeyModifiers::ALT;
+                    }
+                    assert_eq!(
+                        km.resolve(
+                            crate::tui::keymap::Context::List,
+                            crossterm::event::KeyEvent::new(chord.code, modifiers)
+                        ),
+                        Some(action),
+                        "{screen:?} {} must reach {:?}",
+                        hint.key,
+                        action
+                    );
+                }
+            }
+        }
     }
 
     #[test]

@@ -608,7 +608,10 @@ impl Keymap {
             self.bindings.retain(|(_, a)| *a != action);
             self.bindings.retain(|(c, _)| *c != chord);
             self.bindings.push((chord, action));
-            self.by_action.insert(action.name(), chord);
+        }
+        self.by_action.clear();
+        for (chord, action) in &self.bindings {
+            self.by_action.entry(action.name()).or_insert(*chord);
         }
         (self, problems)
     }
@@ -848,6 +851,19 @@ mod tests {
         assert_eq!(problems.len(), 2, "{problems:?}");
         assert!(problems.iter().any(|p| p.contains("nonexistent")));
         assert!(problems.iter().any(|p| p.contains("not a key")));
+    }
+
+    #[test]
+    fn stealing_a_key_forgets_the_displaced_action_in_hints() {
+        let overrides = BTreeMap::from([("db.create".to_string(), "y".to_string())]);
+        let (km, problems) = Keymap::defaults().with_overrides(&overrides);
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!(
+            km.resolve(Context::List, press('y')),
+            Some(Action::NewDatabase)
+        );
+        assert_eq!(km.chord_for(Action::Copy), None);
+        assert_eq!(km.chord_for(Action::NewDatabase), Some(Chord::key('y')));
     }
 
     #[test]

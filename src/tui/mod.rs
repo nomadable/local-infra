@@ -714,7 +714,7 @@ impl App {
             Action::DbForget => self.confirm_forget_resource(ResourceKind::Database),
             Action::BucketForget => self.confirm_forget_resource(ResourceKind::Bucket),
             Action::RotatePassword => {
-                if self.require_resource(ResourceKind::Database).is_some() {
+                if self.selected_resource().is_some() {
                     self.rotate_secret();
                 }
             }
@@ -1384,6 +1384,7 @@ impl App {
         }
         match self.screen {
             Screen::Resources => self.confirm_drop_resource(),
+            Screen::Engines => self.confirm_remove_engine(),
             Screen::Targets => self.confirm_forget_target(),
             Screen::Tunnels => self.confirm_stop_tunnel(),
             // Backup *records* have no core use case that removes them, and
@@ -1468,6 +1469,7 @@ impl App {
 
     fn submit_confirm(&mut self, confirm: Confirm) {
         if confirm.focus == ConfirmFocus::Cancel {
+            self.modal = Some(Modal::Confirm(Box::new(confirm)));
             return;
         }
         if !confirm.armed() {
@@ -1581,17 +1583,22 @@ impl App {
                 resource,
                 overwrite,
             } => {
-                let Some(view) = resource.as_database().cloned() else {
-                    self.notify("버킷 복원은 `linf backup restore`로 실행하세요", true);
-                    return;
-                };
                 let path = record.path();
                 self.jobs.spawn(
                     "복원",
                     self.ctx.clone(),
                     false,
                     move |ctx, reporter, cancel| async move {
-                        backup::restore(&ctx, &path, &view, overwrite, &reporter, &cancel).await?;
+                        match resource {
+                            Resource::Database(view) => {
+                                backup::restore(&ctx, &path, &view, overwrite, &reporter, &cancel)
+                                    .await?
+                            }
+                            Resource::Bucket(view) => {
+                                bucket::restore(&ctx, &path, &view, overwrite, &reporter, &cancel)
+                                    .await?
+                            }
+                        }
                         Ok(Outcome::Note("복원을 완료했습니다".to_string()))
                     },
                 );
@@ -2023,22 +2030,7 @@ impl App {
     }
 
     fn show_logs(&mut self) {
-        let instance = match self.screen {
-            Screen::Resources => self.selected_resource().map(|r| r.engine().clone()),
-            Screen::Targets => {
-                let index = self.source_index();
-                index
-                    .and_then(|i| self.snapshot.targets.get(i))
-                    .and_then(|overview| {
-                        self.snapshot
-                            .engines_for_target(&overview.target.id)
-                            .first()
-                            .map(|e| e.engine.clone())
-                    })
-            }
-            _ => None,
-        };
-        let Some(instance) = instance else {
+        let Some(instance) = self.selected_engine() else {
             self.notify("로그를 볼 엔진이 없습니다", true);
             return;
         };
@@ -2054,10 +2046,15 @@ impl App {
         );
     }
 
-    /// The engine the current selection belongs to: a resource's engine on the
-    /// resources screen, the target's first engine on the targets screen.
+    /// The engine at the current selection: directly on the engines screen,
+    /// through its resource on resources, or the target's first engine.
     fn selected_engine(&self) -> Option<crate::core::model::EngineInstance> {
         match self.screen {
+            Screen::Engines => self
+                .snapshot
+                .engines
+                .get(self.source_index()?)
+                .map(|overview| overview.engine.clone()),
             Screen::Targets => {
                 let overview = self.snapshot.targets.get(self.source_index()?)?;
                 self.snapshot
@@ -2260,6 +2257,19 @@ impl App {
                 (
                     overview.target.clone(),
                     engine::EngineSpec::postgres(EngineKind::Postgres.default_major_version()),
+                )
+            }
+            Screen::Engines => {
+                let Some(overview) = self
+                    .source_index()
+                    .and_then(|i| self.snapshot.engines.get(i))
+                else {
+                    self.notify("엔진을 선택하세요", true);
+                    return;
+                };
+                (
+                    overview.target.clone(),
+                    engine::EngineSpec::new(overview.engine.engine, &overview.engine.major_version),
                 )
             }
             _ => {
@@ -2762,6 +2772,116 @@ mod smoke {
                 "{screen:?} did not draw its own title"
             );
         }
+    }
+
+    #[test]
+    fn x_on_an_engine_opens_the_container_deletion_confirmation() {
+        let (mut app, _dir) = app();
+        key(&mut app, Screen::Engines.digit());
+        key(&mut app, 'x');
+
+        let Some(Modal::Confirm(confirm)) = &app.modal else {
+            panic!(
+                "x on a selected engine must open confirmation: {:?}",
+                app.modal
+            );
+        };
+        assert_eq!(confirm.title(), "엔진 컨테이너 삭제");
+        assert_eq!(
+            confirm.required_name.as_deref(),
+            Some("linf-postgres-17"),
+            "engine deletion must retain its typed-name safety gate"
+        );
+    }
+
+    #[test]
+    fn ctrl_s_on_an_unfocused_engine_delete_keeps_the_modal() {
+        let (mut app, _dir) = app();
+        key(&mut app, Screen::Engines.digit());
+        key(&mut app, 'x');
+        app.on_key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL));
+        assert!(
+            matches!(app.modal, Some(Modal::Confirm(_))),
+            "Cancel-focused Ctrl+S must not drop the confirmation: {:?}",
+            app.modal
+        );
+        assert!(!app.jobs.busy());
+    }
+
+    #[test]
+    fn enter_on_doctor_opens_the_selected_check() {
+        let (mut app, _dir) = app();
+        key(&mut app, Screen::Doctor.digit());
+        press(&mut app, KeyCode::Enter);
+        assert!(matches!(app.modal, Some(Modal::Detail { .. })));
+    }
+
+    #[test]
+    fn enter_on_an_empty_log_does_nothing() {
+        let (mut app, _dir) = app();
+        app.snapshot.activity.clear();
+        app.rebuild_table();
+        key(&mut app, Screen::Activity.digit());
+        press(&mut app, KeyCode::Enter);
+        assert!(app.modal.is_none());
+    }
+
+    #[test]
+    fn x_on_a_backup_does_not_open_a_delete_modal() {
+        let (mut app, _dir) = app();
+        key(&mut app, Screen::Backups.digit());
+        key(&mut app, 'x');
+        assert!(app.modal.is_none());
+        assert!(app.toast.is_some());
+    }
+
+    #[test]
+    fn x_on_a_tunnel_confirms_a_stop_not_a_record_delete() {
+        let (mut app, _dir) = app();
+        key(&mut app, Screen::Tunnels.digit());
+        key(&mut app, 'x');
+        let Some(Modal::Confirm(confirm)) = &app.modal else {
+            panic!("x on a tunnel must open confirmation: {:?}", app.modal);
+        };
+        assert_eq!(confirm.title(), "터널 중지");
+    }
+
+    #[tokio::test]
+    async fn engine_log_and_ensure_use_the_selected_engine() {
+        let (mut app, _dir) = app();
+        key(&mut app, Screen::Engines.digit());
+
+        key(&mut app, 'l');
+        assert!(app.jobs.busy(), "l must fetch logs for the selected engine");
+        assert!(app
+            .toast
+            .as_ref()
+            .is_none_or(|(toast, _)| !toast.text.contains("로그를 볼 엔진이 없습니다")),);
+        app.jobs.cancel_all();
+
+        key(&mut app, 'e');
+        assert!(app.jobs.busy(), "e must ensure the selected engine");
+        assert!(app.toast.as_ref().is_none_or(|(toast, _)| !toast
+            .text
+            .contains("Targets 화면에서 Target을 선택한 뒤 다시 실행하세요")),);
+        app.jobs.cancel_all();
+    }
+
+    #[tokio::test]
+    async fn p_on_a_bucket_rotates_its_key() {
+        let (mut app, _dir) = app();
+        app.snapshot
+            .resources
+            .retain(|resource| resource.kind() == ResourceKind::Bucket);
+        app.rebuild_table();
+        key(&mut app, Screen::Resources.digit());
+        assert_eq!(
+            app.selected_resource().map(|r| r.kind()),
+            Some(ResourceKind::Bucket)
+        );
+        key(&mut app, 'p');
+        assert!(app.jobs.busy(), "p must rotate the selected bucket key");
+        app.jobs.cancel_all();
     }
 
     #[test]

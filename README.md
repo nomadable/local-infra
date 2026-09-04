@@ -252,6 +252,11 @@ linf completions fish > ~/.config/fish/completions/linf.fish
 
 Linux에서 `secrets.mode = "file"`을 사용할 때는 시작 전에 `LINF_PASSPHRASE`를 제공해야 합니다. 기본 `keyring` 모드는 Secret Service를 사용하며, 사용할 수 없으면 제한 모드로 전환됩니다.
 
+MinIO 엔진은 이후 버킷을 관리할 때도 관리자 비밀번호가 필요하므로, 엔진을 만들기 전에
+`keyring` 또는 `file` 모드를 정상적으로 열 수 있는지 확인하세요. `none` 모드에서 만든
+엔진의 비밀번호는 나중에 복구할 수 없습니다. 당시 비밀 저장소를 복원할 수 없다면, 필요한
+데이터를 먼저 보존한 뒤 엔진과 볼륨을 삭제하고 다시 만들어야 합니다.
+
 ```toml
 # config.toml
 [secrets]
