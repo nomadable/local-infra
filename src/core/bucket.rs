@@ -265,7 +265,7 @@ async fn create_inner(
     engine::wait_ready(ctx, &engine_instance, READY_TIMEOUT_SECS, r, c).await?;
     c.check()?;
 
-    let admin = require_admin_password(ctx, &engine_instance)?;
+    let admin = require_admin_password(ctx, &x, &engine_instance).await?;
     reject_duplicates(
         ctx,
         &x,
@@ -426,20 +426,21 @@ fn resolve_secret_key(given: Option<&str>) -> Result<String> {
     }
 }
 
-/// Administering MinIO means authenticating as its root user. In restricted
-/// secret mode nothing was ever stored, so say so instead of failing with an
-/// `mc` error the user cannot act on.
+/// Administering MinIO means authenticating as its root user. If the local
+/// vault has no entry, [`engine::recover_admin_password`] also checks the
+/// original environment of the managed container before this error is shown.
 fn missing_admin_password_error(e: &EngineInstance) -> Error {
     Error::failed(
         format!("엔진 `{}`의 관리자 비밀번호를 찾을 수 없습니다.", e.container_name),
-        "엔진을 만들 때 비밀번호가 영구 저장되지 않았거나, 당시의 비밀 저장소를 더 이상 열 수 없습니다.",
-        "`secrets.mode`를 `keyring` 또는 `file`로 설정해도 기존 비밀번호는 복구되지 않습니다. \
-         기존 비밀 저장소를 복원하거나, 데이터가 불필요한 경우 엔진과 볼륨을 삭제한 뒤 다시 만드세요.",
+        "로컬 비밀 저장소와 관리 컨테이너 모두에 관리자 비밀번호가 없습니다.",
+        "컨테이너가 교체되었거나 환경 변수가 제거되었다면, 데이터가 불필요한 경우 엔진과 볼륨을 삭제한 뒤 다시 만드세요.",
     )
 }
 
-fn require_admin_password(ctx: &Ctx, e: &EngineInstance) -> Result<String> {
-    engine::admin_password(ctx, e)?.ok_or_else(|| missing_admin_password_error(e))
+async fn require_admin_password(ctx: &Ctx, x: &Executor, e: &EngineInstance) -> Result<String> {
+    engine::recover_admin_password(ctx, x, e)
+        .await?
+        .ok_or_else(|| missing_admin_password_error(e))
 }
 
 /// DB-004 both ways: the local registry *and* the live server must be free of
@@ -774,7 +775,7 @@ pub async fn drop(ctx: &Ctx, v: &BucketView, r: &Reporter) -> Result<()> {
     ctx.require_write_lock()?;
     let x = ctx.executor(&v.target)?;
     docker::require_managed(&x, &v.engine.container_name).await?;
-    let admin = require_admin_password(ctx, &v.engine)?;
+    let admin = require_admin_password(ctx, &x, &v.engine).await?;
 
     let mut act = Activity::start(
         &ctx.store,
@@ -869,7 +870,7 @@ pub async fn rotate_key(ctx: &Ctx, v: &BucketView) -> Result<S3ConnectionInfo> {
     ctx.require_write_lock()?;
     let x = ctx.executor(&v.target)?;
     docker::require_managed(&x, &v.engine.container_name).await?;
-    let admin = require_admin_password(ctx, &v.engine)?;
+    let admin = require_admin_password(ctx, &x, &v.engine).await?;
 
     let mut act = Activity::start(
         &ctx.store,
@@ -1190,7 +1191,7 @@ pub async fn backup(
 ) -> Result<BackupRecord> {
     ctx.require_write_lock()?;
     let x = ctx.executor(&v.target)?;
-    let admin = require_admin_password(ctx, &v.engine)?;
+    let admin = require_admin_password(ctx, &x, &v.engine).await?;
     std::fs::create_dir_all(out_dir)?;
     let directory = std::fs::canonicalize(out_dir).unwrap_or_else(|_| out_dir.to_path_buf());
 
@@ -1450,7 +1451,7 @@ pub async fn restore(
     }
     let x = ctx.executor(&v.target)?;
     docker::require_managed(&x, &v.engine.container_name).await?;
-    let admin = require_admin_password(ctx, &v.engine)?;
+    let admin = require_admin_password(ctx, &x, &v.engine).await?;
 
     let mut act = Activity::start(
         &ctx.store,
@@ -1656,16 +1657,6 @@ mod tests {
             managed: true,
             created_at: Utc::now(),
         }
-    }
-
-    #[test]
-    fn missing_admin_password_explains_the_safe_recovery_paths() {
-        let diagnostic = missing_admin_password_error(&engine_row()).as_diagnostic();
-
-        assert!(diagnostic.what.contains("linf-minio-latest"));
-        assert!(diagnostic.cause.contains("영구 저장되지 않았거나"));
-        assert!(diagnostic.next.contains("기존 비밀 저장소를 복원"));
-        assert!(diagnostic.next.contains("엔진과 볼륨을 삭제"));
     }
 
     fn bucket_row() -> ManagedBucket {

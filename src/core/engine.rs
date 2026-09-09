@@ -1443,6 +1443,37 @@ pub fn admin_password(ctx: &Ctx, e: &EngineInstance) -> Result<Option<String>> {
     ctx.secrets.get(&e.credential_ref)
 }
 
+/// Recover an engine password for an explicit administrative operation.
+///
+/// Older macOS builds stored this value in the login Keychain. After the
+/// migration to the local vault, a still-running managed container remains the
+/// authoritative fallback because Docker retained its original secret
+/// environment. Persist the recovered value so later operations use the vault.
+pub async fn recover_admin_password(
+    ctx: &Ctx,
+    x: &Executor,
+    e: &EngineInstance,
+) -> Result<Option<String>> {
+    recover_admin_password_from(&ctx.secrets, x, e).await
+}
+
+async fn recover_admin_password_from(
+    secret_store: &crate::core::secrets::SecretStore,
+    x: &Executor,
+    e: &EngineInstance,
+) -> Result<Option<String>> {
+    if let Some(password) = secret_store.get(&e.credential_ref)? {
+        return Ok(Some(password));
+    }
+    let Some(password) =
+        docker::container_secret_env(x, &e.container_name, password_env(e.engine)).await?
+    else {
+        return Ok(None);
+    };
+    secret_store.set(&e.credential_ref, &password)?;
+    Ok(Some(password))
+}
+
 // ---------------------------------------------------------------------------
 // Reconcile / reset
 // ---------------------------------------------------------------------------
@@ -1978,6 +2009,60 @@ mod tests {
             managed: true,
             created_at: util::now(),
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn missing_admin_password_is_recovered_from_the_managed_container() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let (secret_store, warning) = crate::core::secrets::SecretStore::open_with_passphrase(
+            crate::core::config::SecretMode::File,
+            dir.path(),
+            Some("vault-passphrase"),
+        );
+        assert!(warning.is_none());
+
+        let fake_docker = dir.path().join("docker");
+        std::fs::write(
+            &fake_docker,
+            r#"#!/bin/sh
+case "$*" in
+  *State.Status*) printf 'running\tnone\tminio/minio:latest\t2026-09-02T00:00:00Z\n' ;;
+  *Config.Labels*) printf 'local-infra.managed=true\n' ;;
+  *Config.Env*) printf 'MINIO_ROOT_PASSWORD=original=secret\n' ;;
+  *) exit 1 ;;
+esac
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake_docker, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let x = Executor::Local {
+            docker: fake_docker.display().to_string(),
+        };
+        let engine = minio_row("t-local", 9000, 9001);
+        let credential_ref = engine.credential_ref.clone();
+
+        assert_eq!(
+            recover_admin_password_from(&secret_store, &x, &engine)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("original=secret")
+        );
+        drop(secret_store);
+
+        let (reopened, warning) = crate::core::secrets::SecretStore::open_with_passphrase(
+            crate::core::config::SecretMode::File,
+            dir.path(),
+            Some("vault-passphrase"),
+        );
+        assert!(warning.is_none());
+        assert_eq!(
+            reopened.get(&credential_ref).unwrap().as_deref(),
+            Some("original=secret")
+        );
     }
 
     #[test]

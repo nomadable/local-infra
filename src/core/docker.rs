@@ -155,6 +155,52 @@ pub async fn container_labels(x: &Executor, name: &str) -> Result<BTreeMap<Strin
     }
     Ok(parse_labels(&out.stdout_str()))
 }
+/// Read one environment value from a managed engine container without putting
+/// the value in argv. Callers must treat the returned string as a secret.
+pub async fn container_secret_env(
+    x: &Executor,
+    name: &str,
+    variable: &str,
+) -> Result<Option<String>> {
+    if variable.is_empty()
+        || !variable
+            .bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+    {
+        return Err(Error::Usage(format!(
+            "`{variable}`은(는) 올바른 환경 변수 이름이 아닙니다."
+        )));
+    }
+    require_managed(x, name).await?;
+    let template = format!(
+        r#"{{{{range .Config.Env}}}}{{{{if eq (index (split . "=") 0) "{variable}"}}}}{{{{println .}}}}{{{{end}}}}{{{{end}}}}"#
+    );
+    let argv = vec![
+        x.docker_bin().to_string(),
+        "inspect".into(),
+        "--type".into(),
+        "container".into(),
+        "--format".into(),
+        template,
+        name.to_string(),
+    ];
+    let out = x.run(&argv).await?;
+    if !out.ok() {
+        return Err(x.failure(
+            &argv,
+            &out,
+            &format!("컨테이너 `{name}`의 비밀 환경 변수 조회에 실패했습니다"),
+            "Docker 상태를 확인한 뒤 다시 시도하세요.",
+        ));
+    }
+    let prefix = format!("{variable}=");
+    Ok(out
+        .stdout_str()
+        .lines()
+        .filter_map(|line| line.strip_prefix(&prefix))
+        .next_back()
+        .map(str::to_string))
+}
 
 fn parse_labels(text: &str) -> BTreeMap<String, String> {
     text.lines()
