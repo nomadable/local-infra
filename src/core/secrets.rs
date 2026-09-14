@@ -1,11 +1,17 @@
 //! Secret storage with three modes (decision §19.8).
 //!
-//! * `Keyring` — OS keychain / Secret Service on Linux. On macOS this is a
-//!   0600 encrypted file in the state directory, not the login keychain:
-//!   unsigned `cargo` binaries change code hash every rebuild, so Keychain
-//!   would prompt on every Resources refresh.
-//! * `File` — AES-256-GCM envelope in the state directory, key derived from a
-//!   passphrase with Argon2id. For headless servers.
+//! * `Keyring` — the default. A 0600 AES-256-GCM vault in the state directory
+//!   keyed by a random 0600 `machine.key` next to it, on every platform. It is
+//!   deliberately *not* the OS keychain or Secret Service: unsigned `cargo`
+//!   binaries change code hash every rebuild so macOS Keychain would prompt on
+//!   every refresh, and on Linux a Secret Service provider is often absent or
+//!   locked (headless servers, Hyprland/sway sessions such as Omarchy, coding
+//!   agents run outside a desktop session). Deterministic behaviour matters
+//!   more for a development tool than an at-rest promise the desktop cannot
+//!   keep; `File` mode exists for callers that want a real passphrase.
+//! * `File` — the same AES-256-GCM envelope, but the key is derived from a
+//!   user passphrase with Argon2id instead of a key file, so reading the state
+//!   directory alone is not enough to open it.
 //! * `None` — restricted mode: nothing is persisted. Passwords are returned
 //!   once at creation time and then unrecoverable.
 //!
@@ -20,8 +26,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-
-const SERVICE: &str = "local-infra";
 
 pub fn engine_ref(engine_id: &str) -> String {
     format!("engine:{engine_id}")
@@ -52,7 +56,7 @@ const VERIFIER_PLAIN: &[u8] = b"local-infra-vault-v1";
 
 pub struct SecretStore {
     mode: SecretMode,
-    /// Present only in `File` mode.
+    /// Present in every persistent mode (`Keyring` and `File`).
     file: Option<Mutex<FileVault>>,
     /// Values produced this process in `None` mode, so a single command can
     /// still print the URL it just created.
@@ -67,7 +71,8 @@ struct FileVault {
 
 impl SecretStore {
     /// Open the configured backend, degrading to restricted mode with a warning
-    /// when the keyring is unreachable (headless servers, PRD §10).
+    /// when the vault cannot be opened (unreadable state directory, wrong
+    /// passphrase, PRD §10).
     pub fn open(mode: SecretMode, state_dir: &Path) -> (Self, Option<String>) {
         let passphrase = if mode == SecretMode::File {
             match read_passphrase() {
@@ -96,29 +101,7 @@ impl SecretStore {
     ) -> (Self, Option<String>) {
         match mode {
             SecretMode::None => (Self::restricted(), None),
-            SecretMode::Keyring => {
-                #[cfg(target_os = "macos")]
-                let opened = open_macos_vault(state_dir);
-                #[cfg(not(target_os = "macos"))]
-                let opened = match keyring_probe() {
-                    Ok(()) => (
-                        Self {
-                            mode: SecretMode::Keyring,
-                            file: None,
-                            ephemeral: Mutex::new(BTreeMap::new()),
-                        },
-                        None,
-                    ),
-                    Err(why) => (
-                        Self::restricted(),
-                        Some(format!(
-                            "OS 키체인을 사용할 수 없어 비밀번호 미저장 모드로 동작합니다 ({why}). \
-                             `secrets.mode = \"file\"`로 전환하면 암호화 파일에 저장할 수 있습니다."
-                        )),
-                    ),
-                };
-                opened
-            }
+            SecretMode::Keyring => open_machine_vault(state_dir),
 
             SecretMode::File => match FileVault::open(state_dir, passphrase.unwrap_or_default()) {
                 Ok(vault) => (
@@ -163,10 +146,9 @@ impl SecretStore {
         }
         match self.mode {
             SecretMode::None => Ok(()),
-            SecretMode::Keyring => keyring_entry(reference)?
-                .set_password(secret)
-                .map_err(|e| keyring_error("비밀번호 저장", e)),
-            SecretMode::File => unreachable!("file mode always has a vault"),
+            SecretMode::Keyring | SecretMode::File => {
+                unreachable!("persistent modes always have a vault")
+            }
         }
     }
 
@@ -184,15 +166,9 @@ impl SecretStore {
         }
         match self.mode {
             SecretMode::None => Ok(None),
-            SecretMode::Keyring => match keyring_entry(reference)?.get_password() {
-                Ok(v) => {
-                    self.remember(reference, &v);
-                    Ok(Some(v))
-                }
-                Err(keyring::Error::NoEntry) => Ok(None),
-                Err(e) => Err(keyring_error("비밀번호 조회", e)),
-            },
-            SecretMode::File => unreachable!("file mode always has a vault"),
+            SecretMode::Keyring | SecretMode::File => {
+                unreachable!("persistent modes always have a vault")
+            }
         }
     }
 
@@ -213,41 +189,19 @@ impl SecretStore {
         }
         match self.mode {
             SecretMode::None => Ok(()),
-            SecretMode::Keyring => match keyring_entry(reference)?.delete_credential() {
-                Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-                Err(e) => Err(keyring_error("비밀번호 삭제", e)),
-            },
-            SecretMode::File => unreachable!("file mode always has a vault"),
+            SecretMode::Keyring | SecretMode::File => {
+                unreachable!("persistent modes always have a vault")
+            }
         }
     }
 }
 
-fn keyring_entry(reference: &str) -> Result<keyring::Entry> {
-    keyring::Entry::new(SERVICE, reference).map_err(|e| keyring_error("키체인 항목 생성", e))
-}
-
-#[cfg(not(target_os = "macos"))]
-fn keyring_probe() -> std::result::Result<(), String> {
-    match keyring::Entry::new(SERVICE, "__probe__") {
-        Ok(entry) => match entry.get_password() {
-            Ok(_) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(e) => Err(e.to_string()),
-        },
-        Err(e) => Err(e.to_string()),
-    }
-}
-
-fn keyring_error(what: &str, e: keyring::Error) -> Error {
-    Error::failed(
-        format!("{what}에 실패했습니다"),
-        e.to_string(),
-        "OS 키체인 접근을 허용하거나 `secrets.mode`를 `file` 또는 `none`으로 변경하세요.",
-    )
-}
-
-#[cfg(target_os = "macos")]
-fn open_macos_vault(state_dir: &Path) -> (SecretStore, Option<String>) {
-    match macos_machine_vault(state_dir) {
+/// The default persistent store: `keychain.vault` sealed under `machine.key`.
+///
+/// Both files are 0600 in the state directory. The file names are historical
+/// (macOS was first) and stay stable so existing vaults keep opening.
+fn open_machine_vault(state_dir: &Path) -> (SecretStore, Option<String>) {
+    match machine_vault(state_dir) {
         Ok(vault) => (
             SecretStore {
                 mode: SecretMode::Keyring,
@@ -265,31 +219,63 @@ fn open_macos_vault(state_dir: &Path) -> (SecretStore, Option<String>) {
     }
 }
 
-#[cfg(target_os = "macos")]
-fn macos_machine_vault(state_dir: &Path) -> Result<FileVault> {
-    let key = macos_machine_key(state_dir)?;
+fn machine_vault(state_dir: &Path) -> Result<FileVault> {
+    let key = machine_key(state_dir)?;
     FileVault::open_path(state_dir.join("keychain.vault"), &key)
 }
 
-#[cfg(target_os = "macos")]
-fn macos_machine_key(state_dir: &Path) -> Result<String> {
+fn machine_key(state_dir: &Path) -> Result<String> {
     let path = state_dir.join("machine.key");
-    if path.exists() {
-        let key = std::fs::read_to_string(&path)?;
-        let key = key.trim().to_string();
-        if key.is_empty() {
-            return Err(Error::failed(
-                "로컬 비밀 금고 키가 비어 있습니다",
-                path.display().to_string(),
-                "`machine.key`를 삭제한 뒤 앱을 다시 시작하세요.",
-            ));
-        }
+    if let Some(key) = read_machine_key(&path)? {
         return Ok(key);
     }
     let key = hex(&random_bytes(32));
-    std::fs::write(&path, format!("{key}\n"))?;
+    // Created 0600 from the first byte: a chmod after `fs::write` would leave
+    // the vault key world-readable for a moment on a 022 umask. `create_new`
+    // also settles a first-run race: the loser re-reads the winner's key
+    // instead of sealing entries under a key nobody keeps.
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    match options.open(&path) {
+        Ok(mut file) => {
+            use std::io::Write;
+            file.write_all(format!("{key}\n").as_bytes())?;
+            file.sync_all()?;
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            return read_machine_key(&path)?.ok_or_else(|| empty_machine_key(&path));
+        }
+        Err(e) => return Err(e.into()),
+    }
     harden_file(&path)?;
     Ok(key)
+}
+
+fn read_machine_key(path: &Path) -> Result<Option<String>> {
+    match std::fs::read_to_string(path) {
+        Ok(key) => {
+            let key = key.trim().to_string();
+            if key.is_empty() {
+                return Err(empty_machine_key(path));
+            }
+            Ok(Some(key))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+fn empty_machine_key(path: &Path) -> Error {
+    Error::failed(
+        "로컬 비밀 금고 키가 비어 있습니다",
+        path.display().to_string(),
+        "`machine.key`를 삭제한 뒤 앱을 다시 시작하세요.",
+    )
 }
 
 impl FileVault {
@@ -531,9 +517,8 @@ mod tests {
         assert!(warn.unwrap().contains("암호화 파일 저장소를 열지 못해"));
     }
 
-    #[cfg(target_os = "macos")]
     #[test]
-    fn macos_keyring_mode_uses_a_local_vault_not_the_os_keychain() {
+    fn keyring_mode_uses_a_local_vault_not_the_os_keychain_on_every_platform() {
         let dir = tempfile::tempdir().unwrap();
         let (a, warn) = SecretStore::open(SecretMode::Keyring, dir.path());
         assert!(warn.is_none(), "{warn:?}");

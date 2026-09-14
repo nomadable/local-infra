@@ -1,53 +1,78 @@
 ---
 name: local-infrastructure
-description: Provisions and manages local development PostgreSQL databases and MinIO buckets with linf. Use when a user asks to create, connect, inspect, or modify local Docker development infrastructure, databases, object storage, or environment values.
+description: Provisions and manages local development PostgreSQL databases and MinIO (S3-compatible) buckets with the linf CLI. Use when a project needs a dev database, DATABASE_URL, object-storage bucket, S3 credentials, a .env block for local infrastructure, a database backup/restore/reset, or when the user mentions linf, local-infra, "local postgres", "local minio", or "dev bucket".
 ---
 
-# Local development infrastructure
+# Local development infrastructure (`linf`)
 
-Use `linf` for local development PostgreSQL and MinIO. Do not replace it with raw Docker, Docker Compose, `psql`, or `mc` commands.
+`linf` runs one shared PostgreSQL container and one shared MinIO container per Docker target, then creates a
+dedicated database + user or bucket + access key per project. Use it instead of raw Docker, Docker Compose,
+`psql`, or `mc`. Every command supports `--json`; prefer it and read exit codes.
+
+Full command list: [references/commands.md](references/commands.md).
+Step-by-step recipes (new project, `.env`, reset, backup, remote): [references/workflows.md](references/workflows.md).
 
 ## Safety rules
 
-- Work on the local Docker target only. Do not infer a remote host; require an explicit target, SSH host, and verified fingerprint before any remote action.
-- Start read-only: run `linf doctor --json`, `linf target list --json`, and, when a target exists, `linf engine list --json`.
-- Stop if Docker CLI or daemon checks fail. State the failed check and its remedy; do not attempt a workaround.
-- Before every mutation, show the exact `linf` commands and ask for confirmation. Use `--plan` for engine, DB, and bucket creation. `target add-local` has no plan, so name it explicitly in the confirmation.
-- Never pass passwords or secret keys on the command line. Never put generated `.env` values in a repository, a chat response, or logs unless the user explicitly asks for them.
-- Do not use `--yes` unless the user explicitly authorizes a destructive operation. Never delete, reset, rotate credentials, or modify unmanaged Docker resources unless explicitly requested.
+- Local Docker target only. Never infer a remote host. A remote action needs an explicit target name, SSH host,
+  and a host-key fingerprint the user verified.
+- Start read-only: `linf doctor --json`, `linf target list --json`, then `linf db list --json` and
+  `linf bucket list --json`. Stop and report the failing check and its `remedy` if Docker is not usable. Do not
+  work around it with other tools.
+- Preview before mutating: run `engine ensure`, `db create`, `bucket create`, `db drop`, `bucket drop`,
+  `engine rm`, and `backup restore` with `--plan`, show the plan and the exact commands, and get confirmation.
+  `target add-local` has no `--plan`; name it explicitly when asking.
+- Never pass passwords or secret keys as arguments. Never write generated credentials into the repository,
+  the chat, or logs unless the user asks. `.env` files must stay untracked (`.gitignore`).
+- `--yes` only for a destructive command the user explicitly authorized in this conversation. Never touch
+  Docker resources `linf` does not manage (`linf discover` is read-only). Never run `linf reset` unprompted.
+- Resource names come from command output, not guesses: project `acme` becomes database `acme_dev`, user
+  `acme_user`, bucket `acme-dev`, but read `database.database_name` / `bucket.bucket_name` from the JSON.
 
-## Create local infrastructure
+## Decide what to do
 
-First determine the requested resources: PostgreSQL DB, MinIO bucket, or both; the project name, target, and any requested DB, user, bucket, port, or image overrides. Use defaults when the user does not specify an override.
+| User asks for | Do |
+| --- | --- |
+| A dev database / `DATABASE_URL` | Preflight → select target → `engine ensure … postgres 17 --plan` → `db create --plan` → confirm → create → `db test` → offer `db env` |
+| A bucket / S3 credentials | Same with `engine ensure … minio latest --plan` → `bucket create --plan` → `bucket test` → offer `bucket env` |
+| Both for a new project | One confirmation covering both engine plans and both resource plans; create engines first, then resources |
+| Connection values for an existing project | `db list --json` / `bucket list --json` to find it, then only the requested `db env`, `db url`, `bucket env`, `bucket endpoint` |
+| Wire values into the app | Append `linf db env <db>` / `linf bucket env <bucket>` output to the project's untracked `.env`; never commit it |
+| Reset / fresh data | Prefer `backup run` first, then `db drop --plan` + `db create --plan`, or `db duplicate` for a scratch copy |
+| Lost or leaked password | `db rotate-password` / `bucket rotate-key`, then refresh the `.env` |
+| Something is broken | `linf doctor --json`; on Linux "socket permission" means the user is not in the `docker` group |
 
-1. Select a registered local target before generating a plan. Use the target explicitly named by the user; otherwise use the only registered local target. If no local target exists, show `linf target add-local --name local`, ask for confirmation, and run it before planning any engine or resource. If multiple local targets exist and none is named, ask the user to select one. Call the selected or newly created target `<target>` in every remaining command; never assume its name is `local`.
-2. For each requested engine, preview it only after `<target>` exists:
+## Create resources (canonical flow)
+
+1. Pick the target. Use the one the user named; otherwise the only registered local target. None registered →
+   show `linf target add-local --name local`, confirm, run it. Several and none named → ask. Call it `<target>`.
+2. Plan the engines (idempotent; reuses an existing container):
    ```sh
    linf engine ensure <target> postgres 17 --plan
    linf engine ensure <target> minio latest --plan
    ```
-3. Preview project resources after the engine plan:
+3. Plan the project resources:
    ```sh
    linf db create --target <target> --project <project> --plan
    linf bucket create --target <target> --project <project> --plan
    ```
-4. Show the plan results and exact approved creation commands, then ask for confirmation. Run only the approved commands without `--plan`, in this order: ensure engine, create resource.
-5. Verify each created resource:
-   ```sh
-   linf db test <database>
-   linf bucket test <bucket>
-   ```
-   Use the names returned by the create commands rather than guessing their normalized forms.
-6. Only when requested, print connection values with `linf db env <database>` or `linf bucket env <bucket>`.
+4. Show both plans and the exact creation commands; wait for confirmation. Then run them without `--plan`,
+   engines first, resources second, with `--json` so you can read the created names.
+5. Verify with `linf db test <database>` and `linf bucket test <bucket>`.
+6. Hand over values only on request: `linf db env <database>`, `linf bucket env <bucket>`. Say which
+   variables were written (`DATABASE_URL`, `PG*`, `S3_*`, `AWS_*`) rather than echoing secrets.
 
 ## Existing infrastructure
 
-- Inspect before changing anything: `linf db list --json` and `linf bucket list --json`.
-- Reuse the target and engine already associated with a resource. Do not create a second shared engine merely because a project name is new.
-- If a requested name already exists, report the conflict and offer to use the existing resource or choose a different name. Do not overwrite it.
+- Inspect before changing anything. Reuse the target and engine a resource already belongs to; never create a
+  second engine because a project name is new.
+- A name conflict is reported, not overwritten. Offer to reuse the existing resource or pick another name.
+- Engines bind to `127.0.0.1` by default. Do not change `--bind` unless the user asks for LAN access.
 
-## Examples
+## Environment notes
 
-- “Create a local PostgreSQL database for acme” → preflight, select or register a local target, show the engine/DB plan, wait for confirmation, create, test, then offer the `.env` block.
-- “Set up PostgreSQL and MinIO for acme” → preflight, select or register a local target, show both engine and resource plans, wait for confirmation, create and test each resource.
-- “Show the connection values for acme” → inspect managed resources and print only the requested `linf ... env` output.
+- macOS and Linux (Ubuntu, Debian, Fedora, Arch/Omarchy) are supported. Credentials live in a `0600` local
+  vault in the state directory, so the same values are recoverable from a terminal, an SSH session, or an agent.
+- On Linux, Docker Engine must be running (`systemctl start docker`) and the user must be in the `docker` group.
+  `linf doctor` distinguishes the two and prints the fix.
+- Clipboard commands (`copy-url`, `copy-env`) need a terminal; from an agent prefer `env`/`url` to stdout.

@@ -187,7 +187,7 @@ fn secrets_check(secrets: &SecretStore) -> Check {
     match secrets.mode() {
         SecretMode::Keyring => Check::pass(
             name,
-            "OS 키체인 · 다음 실행에서도 비밀번호를 복구할 수 있습니다",
+            "로컬 비밀 금고(AES-256-GCM, 0600) · 다음 실행에서도 비밀번호를 복구할 수 있습니다",
         ),
         SecretMode::File => Check::pass(
             name,
@@ -196,8 +196,8 @@ fn secrets_check(secrets: &SecretStore) -> Check {
         SecretMode::None => Check::fail(
             name,
             "미저장 모드입니다. 생성 직후 한 번만 표시되고 이후에는 복구할 수 없습니다.",
-            "OS 키체인을 사용할 수 있는 환경에서 실행하거나, `config.toml`에 \
-             `[secrets] mode = \"file\"`을 설정하고 `LINF_PASSPHRASE`를 제공하세요.",
+            "상태 디렉터리에 쓸 수 있는지 확인한 뒤 `config.toml`에 `[secrets] mode = \"keyring\"`(로컬 \
+             금고)을 두거나, `[secrets] mode = \"file\"`을 설정하고 `LINF_PASSPHRASE`를 제공하세요.",
         ),
     }
 }
@@ -215,7 +215,7 @@ async fn docker_cli_check(x: &Executor) -> Check {
             None => Check::fail(
                 name,
                 format!("`{bin}`이(가) 버전을 보고하지 않습니다."),
-                "Docker Desktop 또는 Docker Engine을 설치하고 `docker version`이 동작하는지 확인하세요.",
+                "Docker Desktop 또는 Docker Engine을 설치하고 `docker version`이 동작하는지 확인하세요 (Arch 계열은 `pacman -S docker`, Debian 계열은 `apt install docker.io`).",
             ),
         },
         Err(_) => Check::fail(
@@ -236,10 +236,15 @@ async fn docker_daemon_check(x: &Executor, target_name: &str) -> Check {
                 info.server_version.as_deref().unwrap_or("unknown")
             ),
         ),
+        Ok(info) if info.permission_denied() => Check::fail(
+            name,
+            "Docker 데몬은 있지만 현재 사용자가 Docker 소켓을 열 권한이 없습니다.",
+            docker::LOCAL_SOCKET_PERMISSION_REMEDY,
+        ),
         Ok(_) => Check::fail(
             name,
             "Docker 데몬에 연결할 수 없습니다.",
-            "Docker Desktop 또는 `systemctl start docker`로 데몬을 시작한 뒤 다시 실행하세요.",
+            docker::LOCAL_DAEMON_REMEDY,
         ),
         Err(_) => Check::fail(
             name,
@@ -266,7 +271,7 @@ async fn ssh_binary_check() -> Check {
         Ok(out) => Check::fail(
             name,
             format!("`ssh -V`가 종료 코드 {}로 실패했습니다.", out.code),
-            "OpenSSH 클라이언트를 설치하세요 (macOS는 기본 제공, Debian 계열은 `apt install openssh-client`).",
+            "OpenSSH 클라이언트를 설치하세요 (macOS는 기본 제공, Debian 계열은 `apt install openssh-client`, Arch 계열은 `pacman -S openssh`).",
         ),
         Err(_) => Check::fail(
             name,

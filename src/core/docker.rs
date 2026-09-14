@@ -25,6 +25,21 @@ pub struct DockerInfo {
     pub client_version: Option<String>,
     pub server_version: Option<String>,
     pub reachable: bool,
+    /// Redacted stderr of the failed `docker version` when the daemon could
+    /// not be reached. Lets callers distinguish a stopped daemon from a socket
+    /// the current user may not open.
+    pub daemon_error: Option<String>,
+}
+
+impl DockerInfo {
+    /// The Linux case where the CLI works but the account is not in the
+    /// `docker` group (or rootless Docker is not set up for it).
+    pub fn permission_denied(&self) -> bool {
+        self.daemon_error
+            .as_deref()
+            .map(|e| crate::core::ssh::docker_permission_denied(&e.to_lowercase()))
+            .unwrap_or(false)
+    }
 }
 
 /// Diagnose the Docker CLI and daemon (TAR-002). Never fails for an
@@ -49,8 +64,11 @@ pub async fn info(x: &Executor) -> Result<DockerInfo> {
             client_version: (!client.is_empty()).then_some(client),
             server_version: (!server.is_empty()).then_some(server.clone()),
             reachable: !server.is_empty(),
+            daemon_error: None,
         });
     }
+    let daemon_error =
+        Some(crate::core::util::redact(out.stderr_str().trim())).filter(|e| !e.is_empty());
     // A stopped daemon still lets `docker version` print the client half.
     let client = x
         .run(&[
@@ -68,8 +86,16 @@ pub async fn info(x: &Executor) -> Result<DockerInfo> {
         client_version: client,
         server_version: None,
         reachable: false,
+        daemon_error,
     })
 }
+
+/// What to do when the local daemon is not answering (Docker Desktop, or a
+/// systemd-managed Docker Engine on Linux).
+pub const LOCAL_DAEMON_REMEDY: &str = "Docker Desktop을 시작하거나, Linux에서는 `sudo systemctl start docker`로 데몬을 시작한 뒤 다시 시도하세요.";
+
+/// What to do when the daemon runs but the socket refuses this user (PRD §10).
+pub const LOCAL_SOCKET_PERMISSION_REMEDY: &str = "현재 사용자를 docker 그룹에 추가하세요: `sudo usermod -aG docker $USER` 후 다시 로그인하거나 `newgrp docker`를 실행하세요.";
 
 /// Fail with an actionable diagnostic when the daemon cannot be reached.
 pub async fn require_daemon(x: &Executor) -> Result<DockerInfo> {
@@ -79,12 +105,17 @@ pub async fn require_daemon(x: &Executor) -> Result<DockerInfo> {
     }
     let next = if x.is_remote() {
         "원격 호스트에서 Docker 데몬이 실행 중인지, 해당 SSH 사용자가 Docker를 실행할 권한이 있는지 확인하세요."
+    } else if info.permission_denied() {
+        LOCAL_SOCKET_PERMISSION_REMEDY
     } else {
-        "Docker Desktop 또는 Docker Engine을 시작한 뒤 다시 시도하세요."
+        LOCAL_DAEMON_REMEDY
     };
-    let cause = match &info.client_version {
-        Some(v) => format!("Docker CLI {v}은(는) 있지만 데몬에 연결할 수 없습니다."),
-        None => "Docker CLI를 찾을 수 없습니다.".to_string(),
+    let cause = match (&info.client_version, info.permission_denied()) {
+        (Some(v), true) => {
+            format!("Docker CLI {v}은(는) 있지만 현재 사용자가 Docker 소켓을 열 권한이 없습니다.")
+        }
+        (Some(v), false) => format!("Docker CLI {v}은(는) 있지만 데몬에 연결할 수 없습니다."),
+        (None, _) => "Docker CLI를 찾을 수 없습니다.".to_string(),
     };
     Err(Error::diagnostic(
         Diagnostic::new("Docker에 연결할 수 없습니다", cause, next)
@@ -984,6 +1015,75 @@ mod tests {
         ));
         assert!(!labels_field_contains_managed("local-infra.managed=false"));
         assert!(!labels_field_contains_managed(""));
+    }
+
+    #[test]
+    fn a_socket_the_user_cannot_open_is_a_permission_problem_not_a_stopped_daemon() {
+        let denied = DockerInfo {
+            client_version: Some("29.1.3".into()),
+            server_version: None,
+            reachable: false,
+            daemon_error: Some(
+                "permission denied while trying to connect to the Docker daemon socket at \
+                 unix:///var/run/docker.sock: Get \"http://%2Fvar%2Frun%2Fdocker.sock/v1.51/version\": \
+                 dial unix /var/run/docker.sock: connect: permission denied"
+                    .into(),
+            ),
+        };
+        assert!(denied.permission_denied());
+
+        let stopped = DockerInfo {
+            daemon_error: Some(
+                "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. \
+                 Is the docker daemon running?"
+                    .into(),
+            ),
+            ..denied.clone()
+        };
+        assert!(!stopped.permission_denied());
+        assert!(!DockerInfo {
+            daemon_error: None,
+            ..denied
+        }
+        .permission_denied());
+    }
+
+    /// The Omarchy / fresh-Arch case: Docker Engine runs under systemd but the
+    /// login user is not in the `docker` group yet. The remedy must say so
+    /// instead of telling the user to start a daemon that is already running.
+    #[tokio::test]
+    async fn local_socket_permission_denied_gets_the_docker_group_remedy() {
+        let dir = tempfile::tempdir().unwrap();
+        let fake = dir.path().join("docker");
+        std::fs::write(
+            &fake,
+            "#!/bin/sh\n\
+             case \"$*\" in\n\
+               *'{{.Client.Version}}|{{.Server.Version}}'*)\n\
+                 echo 'permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock' >&2\n\
+                 exit 1 ;;\n\
+               *) echo 29.1.3 ;;\n\
+             esac\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let x = Executor::Local {
+            docker: fake.display().to_string(),
+        };
+
+        let info = info(&x).await.unwrap();
+        assert!(!info.reachable);
+        assert_eq!(info.client_version.as_deref(), Some("29.1.3"));
+        assert!(info.permission_denied(), "{info:?}");
+
+        let err = require_daemon(&x).await.unwrap_err();
+        let diag = err.as_diagnostic();
+        assert!(diag.cause.contains("소켓을 열 권한"), "{diag:?}");
+        assert_eq!(diag.next, LOCAL_SOCKET_PERMISSION_REMEDY);
     }
 
     #[tokio::test]

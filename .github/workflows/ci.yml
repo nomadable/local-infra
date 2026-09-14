@@ -19,10 +19,6 @@ permissions:
           toolchain: "1.88"
           components: rustfmt, clippy
 
-      # Linux keyring support links against the system D-Bus development files.
-      - name: Install Linux build dependencies
-        run: sudo apt-get update && sudo apt-get install --yes libdbus-1-dev pkg-config
-
       - name: Check formatting
         run: cargo fmt --check
 

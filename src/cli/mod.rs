@@ -382,9 +382,12 @@ pub enum SkillCmd {
     /// 번들된 Agent Skill을 설치합니다.
     Install {
         /// Agent Skills 호환 skill 루트. 기본값은 프로젝트의 `.agents/skills`입니다.
-        #[arg(long, value_name = "DIR")]
+        #[arg(long, value_name = "DIR", conflicts_with_all = ["agent", "global"])]
         dir: Option<PathBuf>,
-        /// 사용자 전역 `~/.agents/skills`에 설치합니다.
+        /// 특정 코딩 에이전트의 기본 skill 경로에 설치합니다 (claude, codex, cursor, gemini, copilot).
+        #[arg(long, value_enum, value_name = "AGENT")]
+        agent: Option<agent_skill::Agent>,
+        /// 사용자 전역(`~/.agents/skills` 또는 `--agent`의 전역 경로)에 설치합니다.
         #[arg(short = 'g', long)]
         global: bool,
         /// 기존 local-infrastructure Skill을 새 번들 내용으로 교체합니다.
@@ -539,11 +542,19 @@ async fn run_update(e: Emitter) -> Result<()> {
 
 async fn run_skill(cmd: SkillCmd, e: Emitter) -> Result<()> {
     match cmd {
-        SkillCmd::Install { dir, global, force } => {
-            let dir = agent_skill::resolve_dir(dir, global)?;
+        SkillCmd::Install {
+            dir,
+            agent,
+            global,
+            force,
+        } => {
+            let dir = agent_skill::resolve_dir(dir, agent, global)?;
             let receipt = agent_skill::install(&dir, force)?;
             e.data(&receipt, || {
                 println!("Agent Skill을 `{}`에 설치했습니다.", receipt.path);
+                for file in receipt.files.iter().skip(1) {
+                    println!("  + {file}");
+                }
                 println!("새 agent 세션에서 로컬 인프라 요청을 시작하세요.");
             })
         }
@@ -1833,13 +1844,19 @@ mod tests {
             &mut files,
         );
         assert!(!files.is_empty(), "no sources scanned");
-        let skill =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("skills/local-infra/SKILL.md");
-        assert!(
-            skill.is_file(),
-            "bundled local-infrastructure Agent Skill is missing"
-        );
-        files.push(skill);
+        let skill_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("skills/local-infra");
+        for relative in [
+            "SKILL.md",
+            "references/commands.md",
+            "references/workflows.md",
+        ] {
+            let file = skill_dir.join(relative);
+            assert!(
+                file.is_file(),
+                "bundled local-infrastructure Agent Skill file {relative} is missing"
+            );
+            files.push(file);
+        }
 
         let root = Cli::command();
         // The exact regression this test exists for: `target add` was hinted
@@ -1887,19 +1904,13 @@ mod tests {
         }
     }
 
-    /// The token sequence inside each `` `linf …` `` span, argument-free.
+    /// The token sequence of each `linf …` invocation, argument-free: inline
+    /// `` `linf …` `` spans plus lines that start with `linf ` (fenced recipe
+    /// blocks in the skill files, which agents copy verbatim).
     fn command_hints(text: &str) -> Vec<Vec<String>> {
         let mut out = Vec::new();
-        for span in text.split("`linf").skip(1) {
-            // `linf-postgres-17` is a container name, not an invocation.
-            if !span.starts_with(' ') && !span.starts_with('`') {
-                continue;
-            }
-            let Some(end) = span.find('`') else {
-                continue;
-            };
-
-            let words: Vec<String> = span[..end]
+        let mut push = |invocation: &str| {
+            let words: Vec<String> = invocation
                 .split_whitespace()
                 .take_while(|w| {
                     !w.starts_with('-')
@@ -1910,6 +1921,21 @@ mod tests {
                 .collect();
             if !words.is_empty() {
                 out.push(words);
+            }
+        };
+        for span in text.split("`linf").skip(1) {
+            // `linf-postgres-17` is a container name, not an invocation.
+            if !span.starts_with(' ') && !span.starts_with('`') {
+                continue;
+            }
+            let Some(end) = span.find('`') else {
+                continue;
+            };
+            push(&span[..end]);
+        }
+        for line in text.lines() {
+            if let Some(rest) = line.trim_start().strip_prefix("linf ") {
+                push(rest);
             }
         }
         out
@@ -1945,18 +1971,50 @@ mod tests {
         let cli = Cli::try_parse_from(["linf", "skill", "install"]).unwrap();
         match cli.command {
             Some(Command::Skill {
-                cmd: SkillCmd::Install { dir, global, force },
+                cmd:
+                    SkillCmd::Install {
+                        dir,
+                        agent,
+                        global,
+                        force,
+                    },
             }) => {
                 assert_eq!(dir, None);
+                assert_eq!(agent, None);
                 assert!(!global);
                 assert!(!force);
                 assert_eq!(
-                    agent_skill::resolve_dir(dir, global).unwrap(),
+                    agent_skill::resolve_dir(dir, agent, global).unwrap(),
                     PathBuf::from(".agents/skills")
                 );
             }
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[test]
+    fn skill_install_accepts_an_agent_preset_and_rejects_it_with_dir() {
+        let cli = Cli::try_parse_from(["linf", "skill", "install", "--agent", "claude"]).unwrap();
+        match cli.command {
+            Some(Command::Skill {
+                cmd:
+                    SkillCmd::Install {
+                        dir, agent, global, ..
+                    },
+            }) => {
+                assert_eq!(agent, Some(agent_skill::Agent::Claude));
+                assert_eq!(
+                    agent_skill::resolve_dir(dir, agent, global).unwrap(),
+                    PathBuf::from(".claude/skills")
+                );
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        assert!(Cli::try_parse_from([
+            "linf", "skill", "install", "--agent", "claude", "--dir", "x"
+        ])
+        .is_err());
+        assert!(Cli::try_parse_from(["linf", "skill", "install", "--agent", "unknown"]).is_err());
     }
 
     #[test]
@@ -1971,7 +2029,10 @@ mod tests {
             }
             other => panic!("unexpected {other:?}"),
         }
-        let cli = Cli::try_parse_from([
+        // `--dir` names one exact root; combining it with a scope is a usage
+        // error at parse time and, for callers that build the arguments by
+        // hand, in `resolve_dir` too.
+        assert!(Cli::try_parse_from([
             "linf",
             "skill",
             "install",
@@ -1979,18 +2040,11 @@ mod tests {
             ".claude/skills",
             "--global",
         ])
-        .unwrap();
-        match cli.command {
-            Some(Command::Skill {
-                cmd: SkillCmd::Install { dir, global, .. },
-            }) => {
-                assert!(matches!(
-                    agent_skill::resolve_dir(dir, global),
-                    Err(Error::Usage(_))
-                ));
-            }
-            other => panic!("unexpected {other:?}"),
-        }
+        .is_err());
+        assert!(matches!(
+            agent_skill::resolve_dir(Some(PathBuf::from(".claude/skills")), None, true),
+            Err(Error::Usage(_))
+        ));
     }
 
     #[test]

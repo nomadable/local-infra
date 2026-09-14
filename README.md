@@ -13,12 +13,35 @@
 | 환경 | 필요 항목 |
 | --- | --- |
 | macOS 13+ | Docker Desktop, OpenSSH, 80×24 이상 터미널 |
-| Linux (Ubuntu 22.04+ x86_64) | Docker CLI/daemon, OpenSSH, Secret Service 또는 파일 기반 secret 저장소, 80×24 이상 터미널 |
+| Linux x86_64 / aarch64 (glibc 2.35+: Ubuntu 22.04+, Debian 12+, Fedora, Arch/Omarchy) | Docker Engine 또는 Docker Desktop, OpenSSH, `docker` 그룹 권한, 80×24 이상 터미널. 클립보드 복사는 OSC 52 터미널 또는 `wl-copy`/`xclip` |
 | 원격 Target | SSH 접근 권한과 대상 호스트의 Docker CLI 권한 |
 
 `psql`, `pg_dump`, `pg_restore`, `mc`를 호스트에 설치할 필요는 없습니다. 엔진 컨테이너 안의 도구를 사용합니다.
 
 Docker daemon은 실행 중이어야 합니다. `linf doctor`가 Docker CLI와 daemon 상태를 먼저 검사합니다. 원격 Docker 사용자는 대상 서버에서 Docker를 실행할 권한이 있어야 합니다.
+
+비밀번호와 액세스 키는 어느 플랫폼에서든 OS 키체인이나 Secret Service가 아니라 상태 디렉터리의
+`0600` 로컬 암호화 금고에 저장됩니다. 데스크톱 세션, 헤드리스 서버, 코딩 에이전트 어디서 실행해도
+같은 값을 복구할 수 있습니다. 바이너리는 D-Bus 같은 시스템 라이브러리에 링크하지 않습니다.
+금고 키(`machine.key`)도 같은 디렉터리에 있으므로, 이 방식은 다른 사용자와 실수로 공개되는 파일로부터
+보호할 뿐 상태 디렉터리를 읽을 수 있는 사람에게는 장벽이 아닙니다. 그 경우 `secrets.mode = "file"`로
+passphrase를 요구하세요.
+
+### Arch Linux / Omarchy
+
+Omarchy(Arch + Hyprland)에서는 Docker Engine을 systemd로 켜고 로그인 사용자를 `docker` 그룹에
+넣으면 됩니다. Wayland 클립보드 헬퍼 `wl-clipboard`는 Omarchy에 기본 포함되어 있고, Alacritty와
+Ghostty는 OSC 52를 지원하므로 원격 SSH 세션에서도 복사가 동작합니다.
+
+```sh
+sudo pacman -S --needed docker openssh wl-clipboard
+sudo systemctl enable --now docker
+sudo usermod -aG docker "$USER"   # 적용하려면 다시 로그인하거나 `newgrp docker`
+linf doctor
+```
+
+`linf doctor`는 소켓 권한 문제("현재 사용자가 Docker 소켓을 열 권한이 없습니다")와 데몬이 꺼진
+경우를 구분해 알려 줍니다.
 
 ## 설치
 
@@ -30,7 +53,7 @@ curl -fsSL https://apps.nomadable.io/local-infra/install | bash
 
 installer는 운영체제와 CPU를 감지하고, archive와 SHA-256을 검증한 뒤
 `${LINF_INSTALL_DIR:-$HOME/.local/bin}/linf`에 설치합니다. root로 실행하지 않으며,
-macOS Apple Silicon/Intel과 Linux x86_64 (Ubuntu 22.04+)를 지원합니다.
+macOS Apple Silicon/Intel과 Linux x86_64/aarch64 (glibc 2.35+)를 지원합니다.
 
 특정 버전을 설치하거나 기본 설치 경로를 바꾸려면 installer 인자를 전달하세요.
 
@@ -61,7 +84,8 @@ linf --version
 | --- | --- |
 | macOS Apple Silicon | `linf-aarch64-apple-darwin.tar.gz` |
 | macOS Intel | `linf-x86_64-apple-darwin.tar.gz` |
-| Linux x86_64 (Ubuntu 22.04+) | `linf-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux x86_64 (glibc 2.35+) | `linf-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux aarch64 (glibc 2.35+) | `linf-aarch64-unknown-linux-gnu.tar.gz` |
 
 ```sh
 # 예: macOS Apple Silicon
@@ -96,29 +120,39 @@ cargo install local-infra --locked
 
 ### Agent Skill로 로컬 인프라 구성
 
-`linf`를 설치한 뒤 Agent Skill을 프로젝트에 등록하면, agent에게 로컬 개발용
-PostgreSQL DB와 MinIO 버킷 구성을 요청할 수 있습니다.
+`linf`를 설치한 뒤 Agent Skill을 등록하면 Claude Code, Codex, Cursor, Gemini CLI, Copilot 같은
+코딩 에이전트에게 로컬 개발용 PostgreSQL DB와 MinIO 버킷 구성을 맡길 수 있습니다. 에이전트는
+프로젝트에 DB나 버킷, `DATABASE_URL`, S3 자격 증명, `.env` 값이 필요할 때 이 skill을 자동으로
+불러옵니다.
 
 ```sh
-# 현재 프로젝트: ./.agents/skills/local-infrastructure/SKILL.md
+# 현재 프로젝트, 이식 가능한 경로: ./.agents/skills/local-infrastructure/
 linf skill install
 
-# 현재 사용자 전역: ~/.agents/skills/local-infrastructure/SKILL.md
+# 특정 에이전트의 기본 경로: 예) Claude Code → ./.claude/skills/local-infrastructure/
+linf skill install --agent claude        # claude | codex | cursor | gemini | copilot
+
+# 사용자 전역: ~/.agents/skills 또는 --agent의 전역 경로(예: ~/.claude/skills)
 linf skill install -g
+linf skill install --agent claude -g
+
+# 그 밖의 경로
+linf skill install --dir .my-agent/skills
 ```
 
-`.agent`가 아니라 `.agents/skills`(복수형)를 사용합니다. 이는 Agent Skills 호환 도구가
-프로젝트·사용자 전역에서 함께 탐색하는 경로입니다. 특정 도구가 자체 skill 경로만
-탐색한다면 그 경로를 `--dir`로 명시할 수 있습니다.
+설치되는 파일은 세 개입니다. `SKILL.md`는 항상 로드되는 안전 규칙과 판단 표이고, `references/`는
+에이전트가 필요할 때만 여는 상세 자료입니다.
 
-```sh
-linf skill install --dir .claude/skills
-```
+| 파일 | 내용 |
+| --- | --- |
+| `SKILL.md` | 안전 규칙, 요청 유형별 처리 표, 엔진 → DB/버킷 생성 흐름, 환경별 주의 사항 |
+| `references/commands.md` | 모든 `linf` 서브커맨드와 옵션, `--json` 출력 필드, `.env` 변수 이름 |
+| `references/workflows.md` | 새 프로젝트 DB/버킷, `.env` 연결, 초기화, 백업·복원, 키 교체, 원격 Target, `linf doctor` 진단표 |
 
 등록 뒤에는 새 agent 세션에서 다음처럼 요청합니다.
 
 ```text
-acme용 로컬 PostgreSQL과 MinIO를 구성해줘.
+acme용 로컬 PostgreSQL과 MinIO를 구성하고 .env에 연결값을 넣어줘.
 ```
 
 Skill은 바로 Docker 명령을 조합하지 않습니다. 먼저 `linf doctor`, Target·엔진 목록을
@@ -128,10 +162,11 @@ Skill은 바로 Docker 명령을 조합하지 않습니다. 먼저 `linf doctor`
 
 기본적으로 로컬 Docker만 대상으로 하며, 원격 Target을 추론하지 않습니다. 비밀값은
 명령 인자로 전달하지 않고, 요청하지 않은 `.env` 값도 채팅·저장소·로그에 출력하지
-않습니다. raw Docker/Compose, `psql`, `mc` 대신 항상 `linf` CLI를 사용합니다.
+않습니다. raw Docker/Compose, `psql`, `mc` 대신 항상 `linf` CLI를 사용합니다. 모든 명령은
+`--json`을 지원하므로 에이전트는 표 대신 JSON과 종료 코드를 읽습니다.
 
 기존 Skill은 덮어쓰지 않습니다. 새 `linf` 버전의 지침으로 명시적으로 교체할 때만
-`--force`를 사용하세요.
+`--force`를 사용하세요. `--force`는 `references/` 파일도 함께 갱신합니다.
 
 ```sh
 linf skill install --force
@@ -250,10 +285,16 @@ linf completions fish > ~/.config/fish/completions/linf.fish
 
 `LINF_STATE_DIR`을 설정하면 상태, 설정, 백업, PID 파일을 모두 한 디렉터리에 격리합니다. CI, 테스트, 일회성 실험에 유용합니다.
 
-macOS의 기본 `keyring` 모드는 로그인 키체인 대신 상태 디렉터리의 `0600` 로컬 암호화 금고를
-사용합니다. Linux의 기본 `keyring` 모드는 Secret Service를 사용하며, 사용할 수 없으면 제한
-모드로 전환됩니다. Linux에서 `secrets.mode = "file"`을 사용할 때는 시작 전에
-`LINF_PASSPHRASE`를 제공해야 합니다.
+기본 `keyring` 모드는 macOS와 Linux 모두에서 로그인 키체인이나 Secret Service 대신 상태
+디렉터리의 `0600` 로컬 암호화 금고(`machine.key` + `keychain.vault`)를 사용합니다. 데스크톱
+세션이 없는 서버나 Hyprland 같은 Wayland 세션에서도 동일하게 동작합니다. 금고 자체를
+별도 passphrase로 보호하려면 `secrets.mode = "file"`을 설정하고 시작 전에 `LINF_PASSPHRASE`를
+제공하세요.
+
+v0.4.0 이하의 Linux 빌드가 Secret Service(GNOME Keyring 등)에 저장한 값은 자동으로 옮겨지지
+않습니다. 엔진 관리자 비밀번호는 실행 중인 컨테이너에서 자동 복구되고, 프로젝트 DB·버킷
+자격 증명은 `linf db rotate-password`와 `linf bucket rotate-key`로 다시 발급한 뒤 `.env`를
+갱신하면 됩니다.
 
 MinIO 관리 작업에 필요한 관리자 비밀번호가 로컬 금고에 없으면, `linf`는 자신이 관리하는
 컨테이너의 원래 `MINIO_ROOT_PASSWORD` 환경 변수에서 값을 복구해 금고에 다시 저장합니다.

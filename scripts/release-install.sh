@@ -64,6 +64,9 @@ case "$(uname -s):$(uname -m)" in
   Linux:x86_64)
     TARGET='x86_64-unknown-linux-gnu'
     ;;
+  Linux:aarch64|Linux:arm64)
+    TARGET='aarch64-unknown-linux-gnu'
+    ;;
   *)
     fail "unsupported platform: $(uname -s) $(uname -m)"
     ;;

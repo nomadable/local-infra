@@ -26,9 +26,6 @@ jobs:
           test "$TAG" = "v$version"
 
 
-      - name: Install Linux build dependencies
-        run: sudo apt-get update && sudo apt-get install --yes libdbus-1-dev pkg-config
-
       - name: Check formatting
         run: cargo fmt --check
 
@@ -54,8 +51,13 @@ jobs:
           - os: macos-15-intel
             asset: x86_64-apple-darwin
             macos_deployment_target: "13.0"
+          # Ubuntu 22.04 runners pin the glibc floor at 2.35, so the archives
+          # run on Ubuntu 22.04+, Debian 12+, Fedora, Arch/Omarchy and later.
           - os: ubuntu-22.04
             asset: x86_64-unknown-linux-gnu
+            macos_deployment_target: ""
+          - os: ubuntu-22.04-arm
+            asset: aarch64-unknown-linux-gnu
             macos_deployment_target: ""
     runs-on: ${{ matrix.os }}
     steps:
@@ -64,10 +66,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.88"
-      - name: Install Linux build dependencies
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install --yes libdbus-1-dev pkg-config
-
       - name: Build release binary
         shell: bash
         env:

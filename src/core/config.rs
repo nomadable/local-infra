@@ -110,7 +110,9 @@ pub fn harden_file(path: &Path) -> Result<()> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SecretMode {
-    /// OS keyring. Falls back to `None` at runtime when unavailable.
+    /// Local machine vault in the state directory (`machine.key` +
+    /// `keychain.vault`, both 0600). Falls back to `None` at runtime when the
+    /// state directory cannot hold it.
     #[default]
     Keyring,
     /// Passphrase-encrypted file in the state directory.

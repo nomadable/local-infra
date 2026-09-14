@@ -54,14 +54,6 @@ tempfile = "3"
 unicode-width = "0.2"
 uuid = { version = "1", features = ["v4", "serde"] }
 
-[target.'cfg(target_os = "macos")'.dependencies]
-keyring = { version = "3", features = ["apple-native"] }
-
-
-
-[target.'cfg(target_os = "linux")'.dependencies]
-keyring = { version = "3", features = ["sync-secret-service"] }
-
 [dev-dependencies]
 
 [profile.release]
