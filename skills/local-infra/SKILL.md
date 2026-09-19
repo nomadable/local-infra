@@ -1,6 +1,6 @@
 ---
 name: local-infrastructure
-description: Provisions and manages local development PostgreSQL databases and MinIO (S3-compatible) buckets with the linf CLI. Use when a project needs a dev database, DATABASE_URL, object-storage bucket, S3 credentials, a .env block for local infrastructure, a database backup/restore/reset, or when the user mentions linf, local-infra, "local postgres", "local minio", or "dev bucket".
+description: Provisions and manages local development PostgreSQL databases and MinIO buckets, and opens the native PostgreSQL SQL Workbench, with the linf CLI. Use for dev databases, DATABASE_URL, object storage, SQL execution/catalog/export, external PostgreSQL profiles, backups, or linf/local-infra requests.
 ---
 
 # Local development infrastructure (`linf`)
@@ -26,6 +26,10 @@ Step-by-step recipes (new project, `.env`, reset, backup, remote): [references/w
   the chat, or logs unless the user asks. `.env` files must stay untracked (`.gitignore`).
 - `--yes` only for a destructive command the user explicitly authorized in this conversation. Never touch
   Docker resources `linf` does not manage (`linf discover` is read-only). Never run `linf reset` unprompted.
+- SQL passwords are never argv values or connection-URI fields. Use a prompt, `--secret-stdin`, or
+  `LINF_SQL_PASSWORD`. External profiles default to verified TLS, read-only access, no stored password, and no
+  query text history. Writable external sessions require an explicit `read-write` profile plus exact name
+  confirmation for that one session.
 - Resource names come from command output, not guesses: project `acme` becomes database `acme_dev`, user
   `acme_user`, bucket `acme-dev`, but read `database.database_name` / `bucket.bucket_name` from the JSON.
 
@@ -41,6 +45,8 @@ Step-by-step recipes (new project, `.env`, reset, backup, remote): [references/w
 | Reset / fresh data | Prefer `backup run` first, then `db drop --plan` + `db create --plan`, or `db duplicate` for a scratch copy |
 | Lost or leaked password | `db rotate-password` / `bucket rotate-key`, then refresh the `.env` |
 | Something is broken | `linf doctor --json`; on Linux "socket permission" means the user is not in the `docker` group |
+| Query a managed PostgreSQL DB | Read-only preflight → `linf sql exec <database> --file - --output json`; use the TUI only when the user requests an interactive workspace |
+| Add or use an external PostgreSQL profile | Default verified TLS/read-only/no stored secret → take password from stdin or prompt → `sql connection add` tests before saving → exact name confirmation for any writable session |
 
 ## Create resources (canonical flow)
 

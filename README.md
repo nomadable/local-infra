@@ -7,6 +7,7 @@
 - 접속 URL과 `.env` 블록을 stdout 또는 클립보드로 제공
 - SSH Target, 호스트 키 지문 확인, 로컬 터널, 스트리밍 백업/복원
 - 기본 TUI와 자동화용 JSON 출력
+- PostgreSQL 전용 SQL 작업공간: 편집·실행·catalog·result 탐색·CSV/JSON export
 
 ## 요구 사항
 
@@ -225,6 +226,53 @@ linf target test prod-vps
 ```
 
 `linf`는 SSH 암호를 저장하지 않습니다. 기본적으로 `ssh-agent` 또는 `~/.ssh/config`와 개인키 경로를 사용합니다.
+
+## PostgreSQL SQL 작업공간
+
+`Resources`에서 DB를 선택하고 `o`를 누르거나, DB 이름을 지정해 바로 엽니다.
+호스트에 `psql`을 설치할 필요 없이 Rust PostgreSQL driver가 직접 연결합니다.
+
+```sh
+# 대화형 작업공간
+linf sql open acme_dev
+
+# headless 실행, catalog, history
+linf sql exec acme_dev --command 'select current_database()' --output json
+linf sql catalog acme_dev
+linf sql history --limit 20
+```
+
+작업공간은 여러 buffer와 crash recovery, 선택/current statement 실행(`Ctrl+Enter`),
+전체 buffer 실행(`F5`), server cancellation(`Ctrl+C`), SQL format(`F4`), catalog(`F6`),
+외부 connection 관리(`F7`), history(`F8`), pane 전체 화면(`F10`)을 지원합니다.
+결과는 keyboard로 탐색하며 `Ctrl+E`로 preview limit과 독립적인 CSV, JSON, JSONL 파일을
+`0600` 권한으로 export합니다. export query는 writable 작업공간에서도 server-side
+read-only transaction으로 다시 실행되어 쓰기 side effect를 만들지 않습니다.
+
+외부 PostgreSQL은 별도 profile로 관리합니다. 기본값은 hostname을 검증하는 TLS
+`verify-full`, `READ ONLY`, query text history 비활성, password 미저장입니다.
+password는 argv나 URL로 받지 않고 prompt, stdin, `LINF_SQL_PASSWORD`만 사용합니다.
+
+```sh
+# password를 이번 connection test에만 사용하고 저장하지 않음
+printf '%s\n' \"$PGPASSWORD\" | linf sql connection add staging \
+  --host db.example.com --database app --user app_reader --secret-stdin
+
+# profile 목록/검사/수정/삭제
+linf sql connection list
+linf sql connection test staging
+linf sql connection edit staging --query-timeout 60
+linf sql connection forget staging
+```
+
+외부 writable session은 profile 자체가 `read-write`를 허용하고, 매번 정확한 profile 이름을
+다시 입력해야만 열립니다:
+
+```sh
+linf sql open staging --writable --confirm-profile staging
+linf sql exec staging --command 'update …' \
+  --writable --confirm-profile staging
+```
 
 ## 자주 쓰는 명령
 

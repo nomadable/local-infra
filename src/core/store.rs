@@ -6,6 +6,7 @@
 use crate::core::config::harden_file;
 use crate::core::error::{Error, Result};
 use crate::core::model::*;
+use crate::core::sql::profile::{AccessMode, QueryHistoryEntry, SqlConnectionProfile, TlsMode};
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use std::path::Path;
@@ -160,6 +161,41 @@ CREATE TABLE IF NOT EXISTS activity (
     completed_at     TEXT
 );
 CREATE INDEX IF NOT EXISTS activity_recent ON activity(started_at DESC);
+
+CREATE TABLE IF NOT EXISTS sql_connection_profiles (
+    id                      TEXT PRIMARY KEY,
+    name                    TEXT NOT NULL UNIQUE,
+    host                    TEXT NOT NULL,
+    port                    INTEGER NOT NULL,
+    database_name           TEXT NOT NULL,
+    username                TEXT NOT NULL,
+    tls_mode                TEXT NOT NULL,
+    access_mode             TEXT NOT NULL,
+    credential_ref          TEXT,
+    root_ca_path            TEXT,
+    client_certificate_path TEXT,
+    client_key_path         TEXT,
+    connect_timeout_ms      INTEGER NOT NULL,
+    query_timeout_ms        INTEGER NOT NULL,
+    application_name        TEXT NOT NULL,
+    history_text            INTEGER NOT NULL,
+    preview_rows            INTEGER NOT NULL,
+    created_at              TEXT NOT NULL,
+    updated_at              TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sql_query_history (
+    id            TEXT PRIMARY KEY,
+    profile_id    TEXT REFERENCES sql_connection_profiles(id) ON DELETE SET NULL,
+    profile_label TEXT NOT NULL,
+    executed_at   TEXT NOT NULL,
+    success       INTEGER NOT NULL,
+    elapsed_ms    INTEGER NOT NULL,
+    row_count     INTEGER NOT NULL,
+    query_text    TEXT
+);
+CREATE INDEX IF NOT EXISTS sql_history_recent
+    ON sql_query_history(executed_at DESC);
 "#,
             )?;
             Ok(())
@@ -813,6 +849,184 @@ CREATE INDEX IF NOT EXISTS activity_recent ON activity(started_at DESC);
             Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
         })
     }
+
+    // -- SQL connection profiles -------------------------------------------
+
+    pub fn insert_sql_profile(&self, p: &SqlConnectionProfile) -> Result<()> {
+        self.with(|c| {
+            c.execute(
+                "INSERT INTO sql_connection_profiles (
+                    id, name, host, port, database_name, username, tls_mode, access_mode,
+                    credential_ref, root_ca_path, client_certificate_path, client_key_path,
+                    connect_timeout_ms, query_timeout_ms, application_name, history_text,
+                    preview_rows, created_at, updated_at
+                 ) VALUES (
+                    ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19
+                 )",
+                params![
+                    p.id,
+                    p.name,
+                    p.host,
+                    p.port,
+                    p.database,
+                    p.username,
+                    p.tls_mode.as_str(),
+                    p.access_mode.as_str(),
+                    p.credential_ref,
+                    p.root_ca_path
+                        .as_ref()
+                        .map(|v| v.to_string_lossy().into_owned()),
+                    p.client_certificate_path
+                        .as_ref()
+                        .map(|v| v.to_string_lossy().into_owned()),
+                    p.client_key_path
+                        .as_ref()
+                        .map(|v| v.to_string_lossy().into_owned()),
+                    p.connect_timeout_ms as i64,
+                    p.query_timeout_ms as i64,
+                    p.application_name,
+                    p.history_text as i32,
+                    p.preview_rows as i64,
+                    ts(&p.created_at),
+                    ts(&p.updated_at),
+                ],
+            )
+            .map_err(|e| {
+                unique_conflict(
+                    e,
+                    &format!("SQL connection 이름 `{}`은(는) 이미 사용 중입니다.", p.name),
+                )
+            })?;
+            Ok(())
+        })
+    }
+
+    pub fn update_sql_profile(&self, p: &SqlConnectionProfile) -> Result<()> {
+        self.with(|c| {
+            let n = c
+                .execute(
+                    "UPDATE sql_connection_profiles SET
+                        name=?2, host=?3, port=?4, database_name=?5, username=?6,
+                        tls_mode=?7, access_mode=?8, credential_ref=?9, root_ca_path=?10,
+                        client_certificate_path=?11, client_key_path=?12,
+                        connect_timeout_ms=?13, query_timeout_ms=?14, application_name=?15,
+                        history_text=?16, preview_rows=?17, updated_at=?18
+                     WHERE id=?1",
+                    params![
+                        p.id,
+                        p.name,
+                        p.host,
+                        p.port,
+                        p.database,
+                        p.username,
+                        p.tls_mode.as_str(),
+                        p.access_mode.as_str(),
+                        p.credential_ref,
+                        p.root_ca_path
+                            .as_ref()
+                            .map(|v| v.to_string_lossy().into_owned()),
+                        p.client_certificate_path
+                            .as_ref()
+                            .map(|v| v.to_string_lossy().into_owned()),
+                        p.client_key_path
+                            .as_ref()
+                            .map(|v| v.to_string_lossy().into_owned()),
+                        p.connect_timeout_ms as i64,
+                        p.query_timeout_ms as i64,
+                        p.application_name,
+                        p.history_text as i32,
+                        p.preview_rows as i64,
+                        ts(&p.updated_at),
+                    ],
+                )
+                .map_err(|e| {
+                    unique_conflict(
+                        e,
+                        &format!("SQL connection 이름 `{}`은(는) 이미 사용 중입니다.", p.name),
+                    )
+                })?;
+            if n == 0 {
+                return Err(Error::NotFound(format!(
+                    "SQL connection `{}`을(를) 찾을 수 없습니다.",
+                    p.id
+                )));
+            }
+            Ok(())
+        })
+    }
+
+    pub fn delete_sql_profile(&self, id: &str) -> Result<()> {
+        self.with(|c| {
+            c.execute(
+                "DELETE FROM sql_connection_profiles WHERE id=?1",
+                params![id],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn list_sql_profiles(&self) -> Result<Vec<SqlConnectionProfile>> {
+        self.with(|c| {
+            let mut stmt =
+                c.prepare("SELECT * FROM sql_connection_profiles ORDER BY name COLLATE NOCASE")?;
+            let rows = stmt.query_map([], row_sql_profile)?;
+            Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+    }
+
+    pub fn find_sql_profile(&self, key: &str) -> Result<Option<SqlConnectionProfile>> {
+        self.with(|c| {
+            let mut stmt =
+                c.prepare("SELECT * FROM sql_connection_profiles WHERE id=?1 OR name=?1 LIMIT 1")?;
+            Ok(stmt.query_row(params![key], row_sql_profile).optional()?)
+        })
+    }
+
+    pub fn insert_sql_history(&self, entry: &QueryHistoryEntry) -> Result<()> {
+        self.with(|c| {
+            c.execute(
+                "INSERT INTO sql_query_history (
+                    id, profile_id, profile_label, executed_at, success,
+                    elapsed_ms, row_count, query_text
+                 ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+                params![
+                    entry.id,
+                    entry.profile_id,
+                    entry.profile_label,
+                    ts(&entry.executed_at),
+                    entry.success as i32,
+                    entry.elapsed_ms as i64,
+                    entry.row_count as i64,
+                    entry.query_text,
+                ],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn list_sql_history(&self, limit: usize) -> Result<Vec<QueryHistoryEntry>> {
+        self.with(|c| {
+            let mut stmt = c.prepare(
+                "SELECT * FROM sql_query_history
+                 ORDER BY executed_at DESC, rowid DESC LIMIT ?1",
+            )?;
+            let rows = stmt.query_map(params![limit as i64], row_sql_history)?;
+            Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+    }
+
+    pub fn trim_sql_history(&self, keep: usize) -> Result<()> {
+        self.with(|c| {
+            c.execute(
+                "DELETE FROM sql_query_history WHERE id IN (
+                    SELECT id FROM sql_query_history
+                    ORDER BY executed_at DESC, rowid DESC LIMIT -1 OFFSET ?1
+                 )",
+                params![keep as i64],
+            )?;
+            Ok(())
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -964,6 +1178,48 @@ fn row_activity(r: &Row<'_>) -> rusqlite::Result<ActivityRecord> {
         steps: serde_json::from_str(&r.get::<_, String>("steps")?).unwrap_or_default(),
         started_at: parse_ts(&r.get::<_, String>("started_at")?),
         completed_at: opt_ts(r.get("completed_at")?),
+    })
+}
+
+fn row_sql_profile(r: &Row<'_>) -> rusqlite::Result<SqlConnectionProfile> {
+    Ok(SqlConnectionProfile {
+        id: r.get("id")?,
+        name: r.get("name")?,
+        host: r.get("host")?,
+        port: r.get("port")?,
+        database: r.get("database_name")?,
+        username: r.get("username")?,
+        tls_mode: TlsMode::parse(&r.get::<_, String>("tls_mode")?).unwrap_or(TlsMode::VerifyFull),
+        access_mode: AccessMode::parse(&r.get::<_, String>("access_mode")?)
+            .unwrap_or(AccessMode::ReadOnly),
+        credential_ref: r.get("credential_ref")?,
+        root_ca_path: r.get::<_, Option<String>>("root_ca_path")?.map(Into::into),
+        client_certificate_path: r
+            .get::<_, Option<String>>("client_certificate_path")?
+            .map(Into::into),
+        client_key_path: r
+            .get::<_, Option<String>>("client_key_path")?
+            .map(Into::into),
+        connect_timeout_ms: r.get::<_, i64>("connect_timeout_ms")?.max(1) as u64,
+        query_timeout_ms: r.get::<_, i64>("query_timeout_ms")?.max(1) as u64,
+        application_name: r.get("application_name")?,
+        history_text: r.get::<_, i32>("history_text")? != 0,
+        preview_rows: r.get::<_, i64>("preview_rows")?.max(1) as usize,
+        created_at: parse_ts(&r.get::<_, String>("created_at")?),
+        updated_at: parse_ts(&r.get::<_, String>("updated_at")?),
+    })
+}
+
+fn row_sql_history(r: &Row<'_>) -> rusqlite::Result<QueryHistoryEntry> {
+    Ok(QueryHistoryEntry {
+        id: r.get("id")?,
+        profile_id: r.get("profile_id")?,
+        profile_label: r.get("profile_label")?,
+        executed_at: parse_ts(&r.get::<_, String>("executed_at")?),
+        success: r.get::<_, i32>("success")? != 0,
+        elapsed_ms: r.get::<_, i64>("elapsed_ms")?.max(0) as u64,
+        row_count: r.get::<_, i64>("row_count")?.max(0) as u64,
+        query_text: r.get("query_text")?,
     })
 }
 

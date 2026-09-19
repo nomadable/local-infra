@@ -15,7 +15,9 @@ use crate::core::config::SecretMode;
 use crate::core::error::{Error, Result};
 use crate::core::model::{AuthType, BackupFormat, EngineKind, Origin, ResourceKind};
 use crate::core::progress::{Cancel, Reporter};
-use crate::core::{backup, bucket, database, discovery, doctor, engine, ssh, target, tunnel, Ctx};
+use crate::core::{
+    backup, bucket, database, discovery, doctor, engine, sql, ssh, target, tunnel, Ctx,
+};
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use output::{report, table, Emitter, Format};
 use std::future::Future;
@@ -61,6 +63,11 @@ pub enum Command {
     Db {
         #[command(subcommand)]
         cmd: DbCmd,
+    },
+    /// PostgreSQL SQL 작업공간과 외부 connection을 관리합니다.
+    Sql {
+        #[command(subcommand)]
+        cmd: SqlCmd,
     },
     /// 프로젝트별 오브젝트 스토리지 버킷을 관리합니다.
     Bucket {
@@ -282,6 +289,141 @@ pub enum DbCmd {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+#[value(rename_all = "lower")]
+pub enum SqlOutputFormat {
+    Table,
+    Csv,
+    Json,
+    Jsonl,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SqlCmd {
+    /// DB 또는 외부 connection을 SQL 작업공간에서 엽니다.
+    Open {
+        source: String,
+        /// 외부 connection을 이 작업공간에서만 writable로 엽니다.
+        #[arg(long)]
+        writable: bool,
+        /// writable 승인을 위해 다시 입력한 connection 이름.
+        #[arg(long, requires = "writable")]
+        confirm_profile: Option<String>,
+    },
+    /// SQL을 headless로 실행합니다.
+    Exec {
+        source: String,
+        #[arg(long, conflicts_with = "file")]
+        command: Option<String>,
+        /// SQL 파일. `-`이면 stdin에서 읽습니다.
+        #[arg(long, conflicts_with = "command")]
+        file: Option<String>,
+        #[arg(long, value_enum, default_value = "table")]
+        output: SqlOutputFormat,
+        #[arg(long)]
+        writable: bool,
+        #[arg(long, requires = "writable")]
+        confirm_profile: Option<String>,
+    },
+    /// schema, relation, column, key catalog를 출력합니다.
+    Catalog { source: String },
+    /// 최근 query history metadata를 출력합니다.
+    History {
+        #[arg(long, default_value_t = 100)]
+        limit: usize,
+    },
+    /// 외부 PostgreSQL connection profile을 관리합니다.
+    Connection {
+        #[command(subcommand)]
+        cmd: SqlConnectionCmd,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SqlConnectionCmd {
+    /// connection을 검사한 뒤 저장합니다. secret은 argv로 받지 않습니다.
+    Add {
+        name: String,
+        #[arg(long)]
+        host: String,
+        #[arg(long, default_value_t = 5432)]
+        port: u16,
+        #[arg(long)]
+        database: String,
+        #[arg(long)]
+        user: String,
+        #[arg(long, value_enum, default_value = "verify-full")]
+        tls: sql::TlsMode,
+        #[arg(long, value_enum, default_value = "read-only")]
+        access: sql::AccessMode,
+        #[arg(long)]
+        root_ca: Option<PathBuf>,
+        #[arg(long, default_value_t = 10)]
+        connect_timeout: u64,
+        #[arg(long, default_value_t = 30)]
+        query_timeout: u64,
+        #[arg(long, default_value = "linf-sql")]
+        application_name: String,
+        #[arg(long, default_value_t = 5_000)]
+        preview_rows: usize,
+        #[arg(long)]
+        history_text: bool,
+        /// secret을 stdin 첫 줄에서 읽습니다.
+        #[arg(long)]
+        secret_stdin: bool,
+        /// 입력한 secret을 암호화 vault에 저장합니다. 기본값은 미저장입니다.
+        #[arg(long)]
+        store_secret: bool,
+    },
+    /// 기존 connection 설정을 수정하고 다시 검사합니다.
+    Edit {
+        name: String,
+        #[arg(long)]
+        rename: Option<String>,
+        #[arg(long)]
+        host: Option<String>,
+        #[arg(long)]
+        port: Option<u16>,
+        #[arg(long)]
+        database: Option<String>,
+        #[arg(long)]
+        user: Option<String>,
+        #[arg(long, value_enum)]
+        tls: Option<sql::TlsMode>,
+        #[arg(long, value_enum)]
+        access: Option<sql::AccessMode>,
+        #[arg(long)]
+        root_ca: Option<PathBuf>,
+        #[arg(long)]
+        clear_root_ca: bool,
+        #[arg(long)]
+        connect_timeout: Option<u64>,
+        #[arg(long)]
+        query_timeout: Option<u64>,
+        #[arg(long)]
+        application_name: Option<String>,
+        #[arg(long)]
+        preview_rows: Option<usize>,
+        #[arg(long)]
+        history_text: Option<bool>,
+        #[arg(long, conflicts_with = "remove_secret")]
+        replace_secret_stdin: bool,
+        #[arg(long, conflicts_with = "replace_secret_stdin")]
+        remove_secret: bool,
+    },
+    /// 저장된 connection을 나열합니다.
+    List,
+    /// 실제 TLS와 인증으로 connection을 검사합니다.
+    Test {
+        name: String,
+        /// 저장된 secret 대신 stdin 첫 줄을 사용합니다.
+        #[arg(long)]
+        secret_stdin: bool,
+    },
+    /// profile과 저장된 secret을 삭제합니다. 원격 DB는 변경하지 않습니다.
+    Forget { name: String },
+}
+
 #[derive(Debug, Subcommand)]
 pub enum BucketCmd {
     /// 프로젝트용 버킷과 그 버킷만 접근하는 전용 액세스 키를 만듭니다.
@@ -449,6 +591,23 @@ pub fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
+    let command = match command {
+        Command::Sql {
+            cmd:
+                SqlCmd::Open {
+                    source,
+                    writable,
+                    confirm_profile,
+                },
+        } => {
+            return match crate::tui::sql::run_open(source, writable, confirm_profile) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => ExitCode::from(report(&error, format) as u8),
+            };
+        }
+        other => other,
+    };
+
     let emitter = Emitter::new(cli.json, cli.yes);
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -513,6 +672,7 @@ async fn dispatch(command: Command, e: Emitter) -> Result<()> {
         Command::Target { cmd } => run_target(cmd, e).await,
         Command::Engine { cmd } => run_engine(cmd, e).await,
         Command::Db { cmd } => run_db(cmd, e).await,
+        Command::Sql { cmd } => run_sql(cmd, e).await,
         Command::Bucket { cmd } => run_bucket(cmd, e).await,
         Command::Tunnel { cmd } => run_tunnel(cmd, e).await,
         Command::Backup { cmd } => run_backup(cmd, e).await,
@@ -1141,6 +1301,471 @@ async fn run_db(cmd: DbCmd, e: Emitter) -> Result<()> {
                 println!("`{}`(으)로 복제했습니다.", created.database.database_name);
             })
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// sql
+// ---------------------------------------------------------------------------
+
+async fn run_sql(cmd: SqlCmd, e: Emitter) -> Result<()> {
+    let ctx = context(&e)?;
+    match cmd {
+        SqlCmd::Open { .. } => Err(Error::Usage(
+            "`linf sql open`은 terminal 진입점에서 처리되어야 합니다.".into(),
+        )),
+        SqlCmd::Connection { cmd } => run_sql_connection(&ctx, cmd, e).await,
+        SqlCmd::Exec {
+            source,
+            command,
+            file,
+            output,
+            writable,
+            confirm_profile,
+        } => {
+            let sql_text = read_sql_input(command, file)?;
+            let mut resolved = sql::connection::resolve(
+                &ctx,
+                &source,
+                sql::connection::ResolveOptions {
+                    writable,
+                    confirmation: confirm_profile.as_deref(),
+                    password: None,
+                    start_tunnel: true,
+                },
+            )
+            .await?;
+            prompt_for_external_secret(&mut resolved, &e)?;
+            if let Some(warning) = resolved.endpoint.tls_mode.warning() {
+                e.warn(warning);
+            }
+            let mut session = sql::connection::connect(resolved).await?;
+            let actual_output = if e.is_json() && output == SqlOutputFormat::Table {
+                SqlOutputFormat::Json
+            } else {
+                output
+            };
+            let limits = if actual_output == SqlOutputFormat::Table {
+                sql::runner::QueryLimits::preview(session.endpoint.preview_rows)
+            } else {
+                sql::runner::QueryLimits::streaming_export()
+            };
+            let request = sql::runner::ExecuteRequest {
+                sql: sql_text,
+                base_offset: 0,
+                limits,
+            };
+            let cancel = Cancel::new();
+            let (tx, rx) = tokio::sync::mpsc::channel(8);
+            let run = sql::runner::execute(&ctx, &mut session, request, &cancel, &tx);
+            let render = render_sql_events(rx, actual_output);
+            let (summary, ()) = tokio::try_join!(run, render)?;
+            if summary.success {
+                Ok(())
+            } else {
+                Err(Error::failed(
+                    "SQL 실행에 실패했습니다",
+                    summary
+                        .error
+                        .map(|error| error.message)
+                        .unwrap_or_else(|| "PostgreSQL이 statement를 완료하지 못했습니다.".into()),
+                    "표시된 SQLSTATE와 위치를 확인한 뒤 query를 수정하세요.",
+                ))
+            }
+        }
+        SqlCmd::Catalog { source } => {
+            let mut resolved =
+                sql::connection::resolve(&ctx, &source, sql::connection::ResolveOptions::default())
+                    .await?;
+            prompt_for_external_secret(&mut resolved, &e)?;
+            let session = sql::connection::connect(resolved).await?;
+            let catalog = sql::catalog::refresh(&session).await?;
+            e.data(&catalog, || {
+                let rows: Vec<Vec<String>> = catalog
+                    .relations
+                    .iter()
+                    .flat_map(|relation| {
+                        if relation.columns.is_empty() {
+                            vec![vec![
+                                relation.schema.clone(),
+                                relation.name.clone(),
+                                format!("{:?}", relation.kind),
+                                "-".into(),
+                                "-".into(),
+                                "-".into(),
+                            ]]
+                        } else {
+                            relation
+                                .columns
+                                .iter()
+                                .map(|column| {
+                                    vec![
+                                        relation.schema.clone(),
+                                        relation.name.clone(),
+                                        format!("{:?}", relation.kind),
+                                        column.name.clone(),
+                                        column.data_type.clone(),
+                                        if column.nullable { "YES" } else { "NO" }.into(),
+                                    ]
+                                })
+                                .collect()
+                        }
+                    })
+                    .collect();
+                print!(
+                    "{}",
+                    table(
+                        &["SCHEMA", "RELATION", "KIND", "COLUMN", "TYPE", "NULL"],
+                        &rows
+                    )
+                );
+            })
+        }
+        SqlCmd::History { limit } => {
+            let entries = sql::history::list(&ctx, limit)?;
+            e.data(&entries, || {
+                let rows: Vec<Vec<String>> = entries
+                    .iter()
+                    .map(|entry| {
+                        vec![
+                            entry.executed_at.to_rfc3339(),
+                            entry.profile_label.clone(),
+                            if entry.success { "ok" } else { "failed" }.into(),
+                            format!("{} ms", entry.elapsed_ms),
+                            entry.row_count.to_string(),
+                            entry
+                                .query_text
+                                .as_deref()
+                                .map(one_line)
+                                .unwrap_or_else(|| "(text disabled)".into()),
+                        ]
+                    })
+                    .collect();
+                print!(
+                    "{}",
+                    table(
+                        &[
+                            "EXECUTED",
+                            "CONNECTION",
+                            "STATUS",
+                            "ELAPSED",
+                            "ROWS",
+                            "QUERY"
+                        ],
+                        &rows
+                    )
+                );
+            })
+        }
+    }
+}
+
+async fn run_sql_connection(ctx: &Ctx, cmd: SqlConnectionCmd, e: Emitter) -> Result<()> {
+    match cmd {
+        SqlConnectionCmd::Add {
+            name,
+            host,
+            port,
+            database,
+            user,
+            tls,
+            access,
+            root_ca,
+            connect_timeout,
+            query_timeout,
+            application_name,
+            preview_rows,
+            history_text,
+            secret_stdin,
+            store_secret,
+        } => {
+            if let Some(warning) = tls.warning() {
+                e.warn(warning);
+            }
+            let secret = read_sql_secret(secret_stdin, e.interactive)?;
+            if store_secret && secret.is_none() {
+                return Err(Error::Usage(
+                    "`--store-secret`을 사용하려면 비어 있지 않은 secret을 입력하세요.".into(),
+                ));
+            }
+            let spec = sql::ProfileSpec {
+                name,
+                host,
+                port,
+                database,
+                username: user,
+                tls_mode: tls,
+                access_mode: access,
+                root_ca_path: root_ca,
+                connect_timeout_ms: connect_timeout.saturating_mul(1_000),
+                query_timeout_ms: query_timeout.saturating_mul(1_000),
+                application_name,
+                history_text,
+                preview_rows,
+            };
+            let resolved = sql::connection::resolve_external_spec(&spec, secret.clone())?;
+            sql::connection::test(resolved).await?;
+            let saved = sql::profile::create(ctx, spec, secret.as_deref(), store_secret)?;
+            e.data(&saved, || {
+                println!(
+                    "SQL connection `{}`을(를) 검사하고 저장했습니다: {}",
+                    saved.name,
+                    saved.endpoint_label()
+                );
+                if saved.credential_ref.is_none() {
+                    println!("secret은 저장하지 않았습니다.");
+                }
+            })
+        }
+        SqlConnectionCmd::Edit {
+            name,
+            rename,
+            host,
+            port,
+            database,
+            user,
+            tls,
+            access,
+            root_ca,
+            clear_root_ca,
+            connect_timeout,
+            query_timeout,
+            application_name,
+            preview_rows,
+            history_text,
+            replace_secret_stdin,
+            remove_secret,
+        } => {
+            let existing = sql::profile::require(ctx, &name)?;
+            let replacement = if replace_secret_stdin {
+                read_sql_secret(true, e.interactive)?
+            } else {
+                None
+            };
+            if replace_secret_stdin && replacement.is_none() {
+                return Err(Error::Usage("교체할 secret이 비어 있습니다.".into()));
+            }
+            let test_secret = if remove_secret {
+                None
+            } else if replacement.is_some() {
+                replacement.clone()
+            } else {
+                match &existing.credential_ref {
+                    Some(reference) => ctx.secrets.get(reference)?,
+                    None => None,
+                }
+            };
+            let spec = sql::ProfileSpec {
+                name: rename.unwrap_or_else(|| existing.name.clone()),
+                host: host.unwrap_or_else(|| existing.host.clone()),
+                port: port.unwrap_or(existing.port),
+                database: database.unwrap_or_else(|| existing.database.clone()),
+                username: user.unwrap_or_else(|| existing.username.clone()),
+                tls_mode: tls.unwrap_or(existing.tls_mode),
+                access_mode: access.unwrap_or(existing.access_mode),
+                root_ca_path: if clear_root_ca {
+                    None
+                } else {
+                    root_ca.or(existing.root_ca_path.clone())
+                },
+                connect_timeout_ms: connect_timeout
+                    .map(|seconds| seconds.saturating_mul(1_000))
+                    .unwrap_or(existing.connect_timeout_ms),
+                query_timeout_ms: query_timeout
+                    .map(|seconds| seconds.saturating_mul(1_000))
+                    .unwrap_or(existing.query_timeout_ms),
+                application_name: application_name
+                    .unwrap_or_else(|| existing.application_name.clone()),
+                history_text: history_text.unwrap_or(existing.history_text),
+                preview_rows: preview_rows.unwrap_or(existing.preview_rows),
+            };
+            if let Some(warning) = spec.tls_mode.warning() {
+                e.warn(warning);
+            }
+            sql::connection::test(sql::connection::resolve_external_spec(&spec, test_secret)?)
+                .await?;
+            let password = if remove_secret {
+                sql::PasswordUpdate::Remove
+            } else if let Some(secret) = replacement.as_deref() {
+                sql::PasswordUpdate::Replace(secret)
+            } else {
+                sql::PasswordUpdate::Keep
+            };
+            let saved = sql::profile::update(ctx, &existing.id, spec, password)?;
+            e.data(&saved, || {
+                println!("SQL connection `{}`을(를) 수정했습니다.", saved.name);
+            })
+        }
+        SqlConnectionCmd::List => {
+            let profiles = sql::profile::list(ctx)?;
+            e.data(&profiles, || {
+                let rows: Vec<Vec<String>> = profiles
+                    .iter()
+                    .map(|profile| {
+                        vec![
+                            profile.name.clone(),
+                            profile.endpoint_label(),
+                            profile.tls_mode.as_str().into(),
+                            profile.access_mode.label().into(),
+                            if profile.credential_ref.is_some() {
+                                "stored"
+                            } else {
+                                "prompt"
+                            }
+                            .into(),
+                            if profile.history_text { "on" } else { "off" }.into(),
+                        ]
+                    })
+                    .collect();
+                print!(
+                    "{}",
+                    table(
+                        &["NAME", "ENDPOINT", "TLS", "ACCESS", "SECRET", "HISTORY"],
+                        &rows
+                    )
+                );
+            })
+        }
+        SqlConnectionCmd::Test { name, secret_stdin } => {
+            let override_secret = if secret_stdin {
+                read_sql_secret(true, e.interactive)?
+            } else {
+                None
+            };
+            let mut resolved = sql::connection::resolve(
+                ctx,
+                &name,
+                sql::connection::ResolveOptions {
+                    password: override_secret,
+                    start_tunnel: false,
+                    ..Default::default()
+                },
+            )
+            .await?;
+            prompt_for_external_secret(&mut resolved, &e)?;
+            let label = resolved.endpoint.label.clone();
+            sql::connection::test(resolved).await?;
+            e.note(format!("SQL connection `{label}` 접속에 성공했습니다."));
+            Ok(())
+        }
+        SqlConnectionCmd::Forget { name } => {
+            let forgotten = sql::profile::forget(ctx, &name)?;
+            e.data(&forgotten, || {
+                println!(
+                    "SQL connection `{}`과 저장된 secret을 삭제했습니다. 원격 DB는 변경하지 않았습니다.",
+                    forgotten.name
+                );
+            })
+        }
+    }
+}
+
+fn read_sql_input(command: Option<String>, file: Option<String>) -> Result<String> {
+    match (command, file) {
+        (Some(command), None) if !command.trim().is_empty() => Ok(command),
+        (None, Some(file)) if file == "-" => {
+            use std::io::Read;
+            let mut sql = String::new();
+            std::io::stdin().read_to_string(&mut sql)?;
+            Ok(sql)
+        }
+        (None, Some(file)) => Ok(std::fs::read_to_string(file)?),
+        _ => Err(Error::Usage(
+            "`sql exec`에는 `--command <sql>` 또는 `--file <path|->` 중 하나가 필요합니다.".into(),
+        )),
+    }
+}
+
+fn read_sql_secret(from_stdin: bool, interactive: bool) -> Result<Option<String>> {
+    let value = if from_stdin {
+        let mut secret = String::new();
+        std::io::stdin().read_line(&mut secret)?;
+        secret.trim_end_matches(['\r', '\n']).to_string()
+    } else if let Ok(secret) = std::env::var("LINF_SQL_PASSWORD") {
+        secret
+    } else if interactive {
+        rpassword::prompt_password("PostgreSQL password (empty for none): ").map_err(Error::from)?
+    } else {
+        return Ok(None);
+    };
+    Ok((!value.is_empty()).then_some(value))
+}
+
+fn prompt_for_external_secret(
+    resolved: &mut sql::ResolvedSqlConnection,
+    e: &Emitter,
+) -> Result<()> {
+    if resolved.source.external() && resolved.password().is_none() {
+        resolved.set_password(read_sql_secret(false, e.interactive)?);
+    }
+    Ok(())
+}
+
+async fn render_sql_events(
+    mut events: tokio::sync::mpsc::Receiver<sql::runner::QueryEvent>,
+    format: SqlOutputFormat,
+) -> Result<()> {
+    if format != SqlOutputFormat::Table {
+        let export_format = match format {
+            SqlOutputFormat::Csv => sql::export::ExportFormat::Csv,
+            SqlOutputFormat::Json => sql::export::ExportFormat::Json,
+            SqlOutputFormat::Jsonl => sql::export::ExportFormat::Jsonl,
+            SqlOutputFormat::Table => unreachable!(),
+        };
+        sql::export::write_events(events, std::io::stdout(), export_format).await?;
+        return Ok(());
+    }
+    let mut columns = Vec::new();
+    while let Some(event) = events.recv().await {
+        match event {
+            sql::runner::QueryEvent::ResultStarted { columns: next, .. } => {
+                columns = next;
+                println!("{}", columns.join(" │ "));
+                println!(
+                    "{}",
+                    columns
+                        .iter()
+                        .map(|column| "─".repeat(crate::core::util::display_cols(column).max(1)))
+                        .collect::<Vec<_>>()
+                        .join("─┼─")
+                );
+            }
+            sql::runner::QueryEvent::Rows { rows, .. } => {
+                for row in rows {
+                    println!(
+                        "{}",
+                        row.iter()
+                            .map(|cell| cell.as_deref().unwrap_or("NULL"))
+                            .collect::<Vec<_>>()
+                            .join(" │ ")
+                    );
+                }
+            }
+            sql::runner::QueryEvent::StatementComplete {
+                affected_rows,
+                elapsed_ms,
+                ..
+            } if columns.is_empty() => {
+                eprintln!("{affected_rows} rows · {elapsed_ms} ms");
+            }
+            sql::runner::QueryEvent::Truncated { rows, bytes, .. } => {
+                eprintln!("preview truncated at {rows} rows / {bytes} bytes");
+            }
+            sql::runner::QueryEvent::Finished(_) => break,
+            sql::runner::QueryEvent::StatementStarted { .. }
+            | sql::runner::QueryEvent::StatementComplete { .. }
+            | sql::runner::QueryEvent::Error(_) => {}
+        }
+    }
+    Ok(())
+}
+
+fn one_line(sql: &str) -> String {
+    let compact = sql.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.chars().count() <= 80 {
+        compact
+    } else {
+        format!("{}…", compact.chars().take(79).collect::<String>())
     }
 }
 

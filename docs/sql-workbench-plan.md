@@ -4,7 +4,7 @@ meta:
   title: PostgreSQL 작업공간을 linf에 내재화하는 방법
   category: Product planning
   navLabel: Native SQL Workbench
-status: Draft v0.1
+status: Implemented v1
 product: local-infra
 command: linf
 date: 2026-09-18
@@ -21,7 +21,7 @@ date: 2026-09-18
 - **목표**: PostgreSQL 작업공간의 제품 범위, 안전 경계, 구조, 구현 순서, 검증 조건을 정의한다
 - **대상 독자**: `local-infra` 구현자와 제품 결정을 검토하는 유지보수자
 - **콘텐츠 계획**: 제품 결정, 사용자 흐름, 요구사항, 구조, 보안, 단계별 출시 조건, 검증 계획 순서로 설명한다
-- **열린 질문**: 외부 연결의 쓰기 모드 정책, 쿼리 기록 기본값, 첫 릴리스의 SQL 자동완성 수준
+- **구현 결정**: 외부 비밀번호 미저장, query text opt-in, client certificate 보류, internal editor와 safe-default formatter
 
 ## 제품 결정
 
@@ -659,19 +659,25 @@ Editor widget은 기존 Ratatui layout과 keymap에 통합 가능한지 먼저 �
 
 기존 `psql` 기반 관리 기능은 유지한다. SQL workspace가 실패해도 database 생성, 백업, 복원, 삭제가 영향을 받지 않아야 한다.
 
-## 열린 결정
+## 구현 결정
 
-구현 전에 다음 항목을 확정한다:
+첫 릴리스는 다음 안전한 결정을 적용한다:
 
-1. 외부 profile에서 password 저장을 기본으로 끌지 여부
-2. read-only profile에서 `EXPLAIN ANALYZE`를 허용할지 여부
-3. query history text를 vault에 암호화할지 별도 `0600` DB에 저장할지 여부
-4. 첫 릴리스에서 client certificate 인증을 포함할지 여부
-5. managed local DB의 기본 query timeout을 해제할지 여부
-6. SQL formatter가 PL/pgSQL과 psql meta-command를 처리하지 못할 때의 동작
-7. editor widget을 외부 crate로 사용할지 내부에서 구현할지 여부
+1. 외부 profile password 저장은 기본으로 끈다. prompt, stdin, 환경변수로 받은 값은 사용 후 저장하지 않는다.
+2. read-only profile의 statement는 별도 문자열 차단 없이 PostgreSQL `READ ONLY` transaction에서 실행한다. `EXPLAIN ANALYZE`의 허용 여부도 server가 결정한다.
+3. query history는 결과나 password를 저장하지 않는다. query text는 profile별 opt-in이고 알려진 credential 형태를 redact한 뒤 `0600` SQLite에 저장한다.
+4. client certificate 인증은 첫 릴리스에서 거부한다. TLS `verify-full`과 root CA 추가만 지원한다.
+5. managed DB와 외부 profile의 기본 query timeout은 30초다.
+6. formatter는 `sqlformat`의 PostgreSQL dialect를 사용한다. PL/pgSQL과 psql meta-command에 대한 별도 변환은 하지 않는다.
+7. editor는 내부 UTF-8 buffer, selection, undo/redo, crash recovery 구현을 사용한다.
 
-기본 결정은 안전한 방향을 따른다. 확정되지 않은 기능은 외부·프로덕션 연결에서 비활성 상태로 출시한다.
+## v0.6.0 release note
+
+- SQLite startup migration이 `sql_connection_profiles`, `sql_query_history`와 history index를 추가한다.
+- binary에 `tokio-postgres`, rustls/native roots, `sqlformat`, `csv`, `futures-util`이 추가된다. OpenSSL이나 외부 `psql` runtime은 추가하지 않는다.
+- 외부 profile의 vault reference는 기존 SecretStore에만 저장하고 profile row, CLI JSON, history에는 password를 저장하지 않는다.
+- 기존 `psql` 기반 관리·백업 경로는 유지하며 SQL subsystem 실패와 독립적이다.
+- Linux x86_64 `cargo build --release --locked` 기준 stripped binary는 15,469,816 bytes다. 이전 release baseline이 없어 증분 크기는 다음 tagged release 비교에서 기록한다.
 
 ## 완료 정의
 

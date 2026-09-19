@@ -39,6 +39,10 @@ pub fn bucket_ref(bucket_id: &str) -> String {
     format!("bucket:{bucket_id}")
 }
 
+pub fn sql_profile_ref(profile_id: &str) -> String {
+    format!("sql-profile:{profile_id}")
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct Vault {
     version: u32,

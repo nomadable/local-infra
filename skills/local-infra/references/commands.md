@@ -56,6 +56,23 @@ later commands. `url` embeds the plaintext password: never echo it; show `redact
 `db rotate-password --json` and `db duplicate --json` return the redacted URL and the new `database` record
 respectively; fetch the new secret with `linf db env <database>` when the user needs it.
 
+## SQL Workbench (PostgreSQL only)
+
+| Command | Purpose |
+| --- | --- |
+| `linf sql open <database-or-profile>` | Open the native keyboard-driven workspace. Do not run from a non-interactive agent. |
+| `linf sql exec <source> (--command SQL | --file PATH\\|-) [--output table\\|csv\\|json\\|jsonl]` | Execute statements through the same streaming runner used by the TUI. Prefer `--file -` for generated SQL so it does not enter shell history. |
+| `linf sql catalog <source>` | List PostgreSQL schemas, relations, columns, primary keys, and foreign keys. |
+| `linf sql history [--limit N]` | Read execution metadata. Query text is opt-in per external profile and is redacted before storage. |
+| `linf sql connection add <name> --host H --database D --user U [--port 5432] [--tls verify-full\\|disable] [--access read-only\\|read-write] [--secret-stdin] [--store-secret]` | Test an external PostgreSQL connection, then save the profile. Defaults: verified TLS, read-only, no stored password, no query text. |
+| `linf sql connection edit <name> […] [--replace-secret-stdin\\|--remove-secret]` | Test the proposed profile before replacing it. |
+| `linf sql connection list`, `test <name>`, `forget <name>` | Inspect, test, or remove external profiles. Forget also removes its vault secret. |
+
+Never put an external PostgreSQL password in argv, a connection URI, logs, or chat. Use the interactive prompt,
+`--secret-stdin`, or `LINF_SQL_PASSWORD`; only use `--store-secret` when the user explicitly wants persistence.
+External sessions remain read-only even when a profile permits writes. A one-session escalation requires both
+`--writable` and an exact `--confirm-profile <name>`. TLS `disable` is an explicit warning state, not the default.
+
 ## Buckets (MinIO, S3-compatible)
 
 | Command | Purpose |

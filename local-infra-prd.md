@@ -103,12 +103,24 @@ local-infra (linf)
 - Kubernetes 및 다중 VPS 클러스터
 - PostgreSQL 복제와 자동 장애 조치, MinIO 분산 모드와 사이트 복제
 - 기존 프로젝트 컨테이너의 무인 자동 병합
-- 범용 SQL 편집기 및 결과 그리드, 범용 오브젝트 브라우저
+- PostgreSQL 전용 작업공간 밖의 범용 SQL adapter·plugin ecosystem과 범용 오브젝트 브라우저
 - Docker 자체 설치 및 VPS 프로비저닝
 - 팀 실시간 협업과 중앙 계정 시스템
 - 웹 UI 및 데스크톱 GUI
 - 마우스 중심 인터랙션, 드래그 앤 드롭
 - MySQL, MongoDB, Redis 정식 지원
+
+### 3.3 Post-MVP PostgreSQL SQL 작업공간
+
+관리 기능이 안정화된 뒤 PostgreSQL 전용 native SQL 작업공간을 제공한다. 관리 중인 로컬·SSH
+DB와 별도 외부 profile을 같은 runner로 열고, 여러 buffer, statement 실행, server cancellation,
+catalog, history, result 탐색, CSV/JSON/JSONL streaming export를 지원한다.
+
+외부 profile은 Docker Target 모델과 분리한다. TLS hostname 검증, read-only session, password
+미저장, query text history 비활성을 기본값으로 사용한다. writable session은 profile에서 허용한
+경우에도 정확한 profile 이름을 다시 입력한 한 session에만 적용한다. SQL 문자열 parsing은
+보안 경계로 사용하지 않고 PostgreSQL read-only transaction과 제한된 role이 쓰기를 강제한다.
+Harlequin 호환, 다중 database adapter, plugin API, debugger와 schema migration 도구는 범위 밖이다.
 
 ---
 
@@ -1318,6 +1330,15 @@ ActivityRecord
 - 기존 컨테이너 읽기 전용 탐색
 - 공유 엔진 이전 흐름
 - 원본 보존과 전환 체크리스트
+
+### Phase 3.5: PostgreSQL SQL 작업공간
+
+- `core/sql`, `tui/sql`, `linf sql`을 분리한 PostgreSQL 전용 subsystem
+- 관리 DB와 외부 TLS profile의 공통 connection resolver
+- multi-buffer editor, crash recovery, catalog, history, result grid
+- statement별 streaming 실행, timeout, server cancellation, transaction 상태
+- preview limit과 독립적인 read-only streaming export
+- 외부 profile의 read-only·TLS·credential 안전 정책
 
 ### Phase 4: 확장
 

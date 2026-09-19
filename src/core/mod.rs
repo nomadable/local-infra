@@ -22,6 +22,7 @@ pub mod pg;
 pub mod plan;
 pub mod progress;
 pub mod secrets;
+pub mod sql;
 pub mod ssh;
 pub mod store;
 pub mod target;

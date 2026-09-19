@@ -25,6 +25,7 @@ pub mod modal;
 pub mod onboard;
 pub mod render;
 pub mod rows;
+pub mod sql;
 pub mod ssh_form;
 pub mod terminal;
 
@@ -75,8 +76,23 @@ pub fn run() -> Result<()> {
     let mut guard = TerminalGuard::enter(true)?;
 
     let result = runtime.block_on(async {
-        let mut app = App::new(ctx.clone());
-        app.run(&mut guard.terminal).await
+        loop {
+            let mut app = App::new(ctx.clone());
+            match app.run(&mut guard.terminal).await? {
+                Some((source, start)) => {
+                    sql::workspace::run_in_terminal_with_start(
+                        ctx.clone(),
+                        &mut guard.terminal,
+                        source,
+                        false,
+                        None,
+                        start,
+                    )
+                    .await?;
+                }
+                None => break Ok(()),
+            }
+        }
     });
 
     // Restore before the exit hook talks about tunnels, so anything it prints
@@ -122,6 +138,8 @@ struct App {
     hits: hit::Hits,
     /// After registering the local target, open the create form.
     pending_open_form: bool,
+    /// SQL source and initial view handed to the independent workspace.
+    open_sql: Option<(String, sql::workspace::WorkspaceStart)>,
 }
 
 impl App {
@@ -156,6 +174,7 @@ impl App {
             quit: false,
             hits: hit::Hits::default(),
             pending_open_form: false,
+            open_sql: None,
             ctx,
         };
         if let Some(notice) = app.ctx.notices.first() {
@@ -167,13 +186,16 @@ impl App {
     /// The loop. It selects over terminal events, job progress, job results
     /// and a tick — and never awaits a `core` call, so a slow `docker pull`
     /// cannot stop a keypress from being drawn (TUI-006).
-    async fn run(&mut self, terminal: &mut Tui) -> Result<()> {
+    async fn run(
+        &mut self,
+        terminal: &mut Tui,
+    ) -> Result<Option<(String, sql::workspace::WorkspaceStart)>> {
         // A fresh registry, so the channels belong to this loop.
         let (jobs, mut channels) = Jobs::new();
         self.jobs = jobs;
 
         let stop = Arc::new(AtomicBool::new(false));
-        let mut events = spawn_reader(stop.clone());
+        let (mut events, reader) = spawn_reader(stop.clone());
 
         self.reconcile_and_load();
 
@@ -197,15 +219,18 @@ impl App {
                 break Err(Error::from(e));
             }
             self.hits = hit::compute(&self.view(), area, self.table_state.offset());
+            if let Some(source) = self.open_sql.take() {
+                break Ok(Some(source));
+            }
             if self.quit {
-                break Ok(());
+                break Ok(None);
             }
 
             tokio::select! {
                 event = events.recv() => match event {
                     Some(event) => self.on_event(event),
                     // The reader thread is gone; without input there is no app.
-                    None => break Ok(()),
+                    None => break Ok(None),
                 },
                 Some((id, progress)) = channels.progress.recv() => {
                     self.on_progress(id, progress);
@@ -218,6 +243,7 @@ impl App {
         };
 
         stop.store(true, Ordering::SeqCst);
+        let _ = reader.join();
         outcome
     }
 
@@ -724,6 +750,24 @@ impl App {
                 }
             }
             Action::Duplicate => self.duplicate_database(),
+            Action::SqlOpen | Action::SqlExec => {
+                self.queue_sql_workspace(sql::workspace::WorkspaceStart::Editor, true)
+            }
+            Action::SqlCatalog => {
+                self.queue_sql_workspace(sql::workspace::WorkspaceStart::Catalog, true)
+            }
+            Action::SqlHistory => {
+                self.queue_sql_workspace(sql::workspace::WorkspaceStart::History, false)
+            }
+            Action::SqlConnectionAdd => {
+                self.queue_sql_workspace(sql::workspace::WorkspaceStart::NewConnection, false)
+            }
+            Action::SqlConnectionEdit
+            | Action::SqlConnectionList
+            | Action::SqlConnectionTest
+            | Action::SqlConnectionForget => {
+                self.queue_sql_workspace(sql::workspace::WorkspaceStart::Connections, false)
+            }
             Action::TunnelStart => self.tunnel_lifecycle(Action::TunnelStart),
             Action::TunnelStop => self.tunnel_lifecycle(Action::TunnelStop),
             Action::TunnelRestart => self.tunnel_lifecycle(Action::TunnelRestart),
@@ -742,6 +786,39 @@ impl App {
                 }
             }
         }
+    }
+
+    fn queue_sql_workspace(&mut self, start: sql::workspace::WorkspaceStart, require_source: bool) {
+        if self.jobs.busy() {
+            self.notify("진행 중인 작업이 끝난 뒤 SQL 작업공간을 여세요", false);
+            return;
+        }
+        let selected = self
+            .selected_resource()
+            .and_then(|resource| resource.managed_database())
+            .map(|database| database.id.clone());
+        let managed = selected.or_else(|| {
+            self.ctx
+                .store
+                .list_databases()
+                .ok()
+                .and_then(|databases| databases.into_iter().next())
+                .map(|database| database.id)
+        });
+        let source = managed.or_else(|| {
+            crate::core::sql::profile::list(&self.ctx)
+                .ok()
+                .and_then(|profiles| profiles.into_iter().next())
+                .map(|profile| profile.id)
+        });
+        if require_source && source.is_none() {
+            self.notify(
+                "PostgreSQL database 또는 SQL connection을 먼저 추가하세요",
+                true,
+            );
+            return;
+        }
+        self.open_sql = Some((source.unwrap_or_default(), start));
     }
 
     /// Selection-scoped commands need the screen that owns that selection.
@@ -2578,9 +2655,14 @@ fn view_state(previous: &TableState) -> TableState {
 /// `poll` with a timeout rather than a blocking `read` so the thread exits
 /// promptly when the app does: a thread left blocked on stdin would swallow the
 /// user's next shell command.
-fn spawn_reader(stop: Arc<AtomicBool>) -> tokio::sync::mpsc::UnboundedReceiver<Event> {
+fn spawn_reader(
+    stop: Arc<AtomicBool>,
+) -> (
+    tokio::sync::mpsc::UnboundedReceiver<Event>,
+    std::thread::JoinHandle<()>,
+) {
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    std::thread::spawn(move || {
+    let reader = std::thread::spawn(move || {
         while !stop.load(Ordering::SeqCst) {
             match crossterm::event::poll(Duration::from_millis(100)) {
                 Ok(true) => match crossterm::event::read() {
@@ -2596,7 +2678,7 @@ fn spawn_reader(stop: Arc<AtomicBool>) -> tokio::sync::mpsc::UnboundedReceiver<E
             }
         }
     });
-    rx
+    (rx, reader)
 }
 
 #[cfg(test)]

@@ -1,6 +1,6 @@
 [package]
 name = "local-infra"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 rust-version = "1.88"
 description = "local-infra — shared local and remote development infrastructure from the terminal"
@@ -27,6 +27,7 @@ argon2 = "0.5"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive", "wrap_help"] }
 clap_complete = "4"
+csv = "1.3"
 crossterm = "0.28"
 directories = "5"
 fs4 = { version = "0.12", features = ["sync"] }
@@ -38,7 +39,12 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
+futures-util = "0.3"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-native-certs = "0.8"
+rustls-pemfile = "2"
 thiserror = "2"
+sqlformat = "0.5"
 tokio = { version = "1", features = [
     "rt-multi-thread",
     "macros",
@@ -49,6 +55,8 @@ tokio = { version = "1", features = [
     "fs",
     "signal",
 ] }
+tokio-postgres = "0.7"
+tokio-postgres-rustls = { version = "0.14", features = ["ring"] }
 toml = "0.8"
 tempfile = "3"
 unicode-width = "0.2"
